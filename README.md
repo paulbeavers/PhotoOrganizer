@@ -3,7 +3,8 @@
 A native macOS photo browser that sits in front of file-based editors such as Photoshop and
 NX Studio, in the spirit of Adobe Bridge. Photos stay where they are in the file system. Nothing
 is imported, and originals are never modified. Everything the app records is stored in plain files:
-XMP sidecars next to the photos, plus a library folder of JSON and text files.
+XMP sidecars next to the photos, plus a data folder of JSON and text files. There is no
+database or catalog.
 
 ## Features
 
@@ -38,7 +39,7 @@ XMP sidecars next to the photos, plus a library folder of JSON and text files.
   *Save as Smart Collection…*. Opening one loads its filters into the filter bar, where they can be
   adjusted and saved again.
 
-**File operations** (sidecars always travel with their photos)
+**File operations** (sidecars and editor settings files always travel with their photos)
 - **Move / Copy To** a sidebar folder or any folder (⇧⌘M / ⇧⌘C). You can also drag photos onto a
   sidebar folder: plain drag moves, ⌥-drag copies.
 - **Rename / batch rename** (⇧⌘R) with tokens such as `{name}`, `{n:4}`, `{date}`,
@@ -80,20 +81,53 @@ Rules for sidecars:
   of a pair is moved, renamed or trashed, the sidecar is copied rather than moved, so the file left
   behind keeps its tags.
 
-### Library folder
+### Other editors' settings files
 
-The default library folder is `~/Pictures/Photo Organizer Library`. It can be changed in
-Settings → Library, for example to a synced folder shared between Macs.
+Move, copy, rename and trash also carry each photo's settings files from other editors, so their
+edits are never left behind or orphaned:
+
+| Editor | Settings file |
+|---|---|
+| NX Studio | `NKSC_PARAM/<file>.nksc` (e.g. `NKSC_PARAM/DSC_0001.NEF.nksc`) |
+| RawTherapee | `<file>.pp3` next to the photo |
+| DxO PhotoLab | `<file>.dop` next to the photo |
+
+These belong to one file each, so the NEF and JPEG of a pair keep their own. Editor folders such as
+`NKSC_PARAM` are hidden from the sidebar. To support another editor, add it to
+`CompanionFileType.all` in `FileOperations.swift`.
+
+### Data folder
+
+All app configuration and everything you create is saved in the data folder,
+`~/Pictures/Photo Organizer` by default. It is an ordinary folder of files, not a database or
+catalog. It can be changed in Settings → Data Folder. Put it in a synced folder (iCloud Drive,
+Dropbox, a NAS) and every Mac gets the same sidebar, editors, preferences, collections and
+keywords.
 
 ```
-Collections/<Name>.json   one file per collection (paths under your home folder are stored as ~/…)
+Settings.json             sidebar folders, external editors (+ per-extension rules), appearance, preferences
+Collections/<Name>.json   one file per collection
 Keywords.txt              keyword list in the tab-indented Lightroom/Bridge import/export format
 ```
 
-### Not data
+Paths under your home folder are stored as `~/…`, so they work on another Mac with a different
+user name. Editors also record the app's bundle ID, so they are found even if the app is installed
+somewhere else. The app re-reads the data folder whenever it comes to the front, so synced changes
+show up without a restart.
 
-App preferences, the sidebar folder list (stored as security-scoped bookmarks) and editor settings
-are kept in the app's user defaults. Thumbnails are a disposable cache in `~/Library/Caches`.
+### Kept on each Mac (not synced)
+
+- **Where the data folder is.** The app needs this before it can read `Settings.json`.
+- **Folder access permissions.** In the sandboxed build, folders outside `~/Pictures` need a
+  one-time grant on each Mac (the sandbox's permission tokens can't be transferred). A sidebar
+  folder without access shows a lock; click it to grant access.
+- **View state:** the last folder opened and the inspector tab.
+- **The thumbnail cache** in `~/Library/Caches`, which can be deleted at any time.
+
+## Download
+
+Get the signed, notarized app from **https://photoorganizer.pbcs.io**. It needs an Apple silicon
+Mac running macOS 15 or later.
 
 ## Building
 
@@ -102,14 +136,34 @@ Requires Xcode 16 or later and macOS 15 or later.
 ```sh
 swift run                              # build and launch unsandboxed (debug)
 swift test                             # run the core tests
-./scripts/build-app.sh                 # build/PhotoOrganizer.app: release, App Sandbox on
+./scripts/build-app.sh                 # "build/Photo Organizer.app": release, App Sandbox on
 ./scripts/build-app.sh --no-sandbox    # same, without the sandbox
 open Package.swift                     # work in Xcode
 ```
 
-The build script signs with the first *Apple Development* identity in your keychain (override with
-`SIGN_IDENTITY=…`). A stable signature matters for the sandboxed build, because macOS ties the
-app's data container and saved folder bookmarks to it.
+The build script signs with your *Developer ID Application* identity if you have one, else
+*Apple Development*, else ad hoc (override with `SIGN_IDENTITY=…`). Development and release builds
+must share a signing team, because macOS ties the sandboxed app's data container and saved folder
+bookmarks to it.
+
+## Releasing
+
+```sh
+./scripts/package.sh       # build/PhotoOrganizer-<date>-<commit>.dmg (+ build/PhotoOrganizer.dmg)
+./scripts/deploy-web.sh    # publish web/ and the DMG to https://photoorganizer.pbcs.io
+```
+
+- `package.sh` signs a copy of the app with the Developer ID, hardened runtime and the sandbox
+  entitlements, notarizes and staples it, then does the same for the drag-to-Applications DMG.
+  It uses the `shoji-notary` notarytool profile (shared with Shoji and MacLucent), and
+  `--unsigned` skips signing. Commit first: uncommitted builds are stamped "(modified)".
+- `deploy-web.sh` uploads the site and the newest DMG to a private S3 bucket
+  (`photoorganizer-downloads-<account>`) behind CloudFront, and invalidates the cache. It refuses
+  to publish a DMG that isn't notarized. Needs `aws login`; `--dry-run` shows every AWS call.
+- `deploy-cdn.sh` is a one-time setup: the ACM certificate, CloudFront distribution, bucket
+  lock-down and Route 53 record for the hostname.
+
+The scripts and the site are modelled on `../mactile` (MacLucent) and `../shoji`.
 
 **Sandbox notes.** The sandboxed app can only access `~/Pictures` and folders you choose in an open
 panel or drag in. Those folders are remembered with security-scoped bookmarks. The sandboxed app
@@ -124,12 +178,13 @@ Sources/PhotoOrganizerCore/     UI-free logic, unit tested (swift test)
   TagStore.swift                tags <-> XMP sidecars (diff-based, preserves foreign content)
   FileOperations.swift          copy/move/rename/trash with sidecars; batch rename templates
   Collections.swift             search criteria, collections, JSON collection store, portable paths
-  KeywordLibrary.swift          Lightroom/Bridge keyword-list format and keyword trees
+  KeywordList.swift             Lightroom/Bridge keyword-list format and keyword trees
   FolderScanner.swift, MetadataReader.swift, ExternalEditor.swift
 Sources/PhotoOrganizer/         SwiftUI app
-  Models/                       BrowserModel (sources, selection, culling, file ops), LibraryModel, EditorSettings
+  Models/                       BrowserModel (sources, selection, culling, file ops), DataFolderModel, EditorSettings
   Services/                     ThumbnailLoader (memory + disk cache), FileSystemWatcher (FSEvents), FolderAccess (bookmarks)
   Views/                        sidebar, grid, inspector, keyword panel, review/compare, batch rename, settings
-Resources/                      sandbox entitlements
-scripts/build-app.sh            app bundle + signing
+Resources/                      Info.plist, sandbox entitlements
+scripts/                        build-app.sh, package.sh (DMG), deploy-web.sh / deploy-cdn.sh (site)
+web/                            the website (index.html, style.css, assets/)
 ```

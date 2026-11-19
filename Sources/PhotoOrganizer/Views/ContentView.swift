@@ -4,7 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(BrowserModel.self) private var browser
     @Environment(EditorSettings.self) private var editors
-    @Environment(LibraryModel.self) private var library
+    @Environment(DataFolderModel.self) private var dataFolder
     @State private var showInspector = true
 
     var body: some View {
@@ -36,9 +36,12 @@ struct ContentView: View {
                 }
                 FilterMenu()
                 SortMenu()
-                Slider(value: $browser.thumbnailSize, in: 96...360)
-                    .frame(width: 100)
-                    .help("Thumbnail size")
+            }
+            // The slider gets its own toolbar item so it never shares (and overlaps) space with the menus.
+            ToolbarItem(placement: .primaryAction) {
+                ThumbnailSizeSlider(size: $browser.thumbnailSize)
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     browser.startReview()
                 } label: {
@@ -61,6 +64,16 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: browser.isReviewing)
+        // Settings.json, collections and keywords may have been changed by another Mac via sync.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            dataFolder.reload()
+        }
+        .onChange(of: dataFolder.settings.sidebarFolders) {
+            browser.syncSidebarWithSettings()
+        }
+        .onChange(of: dataFolder.settings.appearance) {
+            dataFolder.applyAppearance()
+        }
         .sheet(item: $browser.namePrompt) { prompt in
             NamePromptSheet(prompt: prompt)
         }
@@ -74,7 +87,7 @@ struct ContentView: View {
             Button("Move to Trash", role: .destructive) { browser.moveToTrash(request.urls) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("Their XMP sidecars are moved to the Trash too, unless another file still shares them.")
+            Text("Their NX Studio, RawTherapee and DxO edit files go to the Trash too. XMP sidecars are trashed unless another file still shares them.")
         }
         .alert("Something went wrong", isPresented: errorBinding(\.errorMessage, on: browser)) {
             Button("OK") { browser.errorMessage = nil }
@@ -86,10 +99,10 @@ struct ContentView: View {
         } message: {
             Text(editors.lastError ?? "")
         }
-        .alert("Library problem", isPresented: errorBinding(\.errorMessage, on: library)) {
-            Button("OK") { library.errorMessage = nil }
+        .alert("Couldn't save to the data folder", isPresented: errorBinding(\.errorMessage, on: dataFolder)) {
+            Button("OK") { dataFolder.errorMessage = nil }
         } message: {
-            Text(library.errorMessage ?? "")
+            Text(dataFolder.errorMessage ?? "")
         }
     }
 
@@ -210,6 +223,18 @@ private struct FilterMenu: View {
             Picker("Flag", selection: $browser.criteria.flag) {
                 ForEach(FlagFilter.allCases) { Text($0.displayName).tag($0) }
             }
+            Menu("Keyword") {
+                let tree = KeywordNode.tree(from: browser.loadedKeywords)
+                if tree.isEmpty {
+                    Text("No keywords on these photos")
+                } else {
+                    ForEach(tree) { KeywordFilterItem(node: $0) }
+                    if !browser.criteria.keywords.isEmpty {
+                        Divider()
+                        Button("Clear Keyword Filters") { browser.criteria.keywords = [] }
+                    }
+                }
+            }
             Divider()
             Button("Clear Filters") { browser.criteria = SearchCriteria() }
                 .disabled(browser.criteria.isEmpty)
@@ -217,7 +242,52 @@ private struct FilterMenu: View {
             Label("Filter", systemImage: browser.criteria.isEmpty
                   ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
         }
-        .help("Filter by rating, label or flag")
+        .help("Filter by rating, label, flag or keyword")
+    }
+}
+
+/// One keyword in the filter menu. Keywords with children become submenus whose first item filters
+/// by the keyword itself (which also matches all of its children).
+private struct KeywordFilterItem: View {
+    @Environment(BrowserModel.self) private var browser
+    let node: KeywordNode
+
+    var body: some View {
+        if let children = node.children {
+            Menu(node.name) {
+                toggle(title: "All “\(node.name)”")
+                Divider()
+                ForEach(children) { KeywordFilterItem(node: $0) }
+            }
+        } else {
+            toggle(title: node.name)
+        }
+    }
+
+    private func toggle(title: String) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { browser.criteria.keywords.contains { $0.caseInsensitiveCompare(node.path) == .orderedSame } },
+            set: { isOn in
+                browser.criteria.keywords.removeAll { $0.caseInsensitiveCompare(node.path) == .orderedSame }
+                if isOn { browser.criteria.keywords.append(node.path) }
+            }))
+    }
+}
+
+private struct ThumbnailSizeSlider: View {
+    @Binding var size: Double
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "photo").imageScale(.small)
+            Slider(value: $size, in: 96...360)
+                .frame(width: 100)
+            Image(systemName: "photo").imageScale(.large)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .fixedSize()
+        .help("Thumbnail size")
     }
 }
 

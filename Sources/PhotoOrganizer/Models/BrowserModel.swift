@@ -57,17 +57,24 @@ struct FileRequest: Identifiable {
 /// A lazily expanded node in the sidebar folder tree.
 final class FolderNode: Identifiable, @unchecked Sendable {  // only touched on the main thread
     let url: URL
+    /// False for a sidebar folder this Mac hasn't been granted access to yet (sandbox), e.g. one
+    /// that arrived in Settings.json from another Mac.
+    let isAccessible: Bool
     private var loadedChildren: [FolderNode]?
 
-    init(url: URL) { self.url = url }
+    init(url: URL, isAccessible: Bool = true) {
+        self.url = url
+        self.isAccessible = isAccessible
+    }
 
     var id: URL { url }
     var name: String { FileManager.default.displayName(atPath: url.path) }
 
     /// `nil` for leaf folders so the outline shows no disclosure triangle.
     var children: [FolderNode]? {
+        guard isAccessible else { return nil }
         if loadedChildren == nil {
-            loadedChildren = FolderScanner.subfolders(of: url).map(FolderNode.init)
+            loadedChildren = FolderScanner.subfolders(of: url).map { FolderNode(url: $0) }
         }
         return loadedChildren!.isEmpty ? nil : loadedChildren
     }
@@ -77,15 +84,12 @@ final class FolderNode: Identifiable, @unchecked Sendable {  // only touched on 
 @MainActor
 @Observable
 final class BrowserModel {
+    /// Local, per-Mac view state only. Everything else lives in `Settings.json` in the data folder.
     private enum Keys {
-        static let rootBookmarks = "rootFolderBookmarks"
-        static let legacyRoots = "rootFolders"
         static let lastFolder = "lastFolder"
-        static let includeSubfolders = "includeSubfolders"
-        static let autoAdvance = "autoAdvance"
     }
 
-    let library: LibraryModel
+    let dataFolder: DataFolderModel
 
     private(set) var rootNodes: [FolderNode] = []
     private(set) var source: BrowseSource?
@@ -104,15 +108,21 @@ final class BrowserModel {
     var sortOrder: PhotoSortOrder = .name { didSet { refilter() } }
     var sortAscending = true { didSet { refilter() } }
     var thumbnailSize: Double = 160
+    /// Show the contents of all subfolders (stored in Settings.json).
     var includeSubfolders: Bool {
-        didSet {
-            UserDefaults.standard.set(includeSubfolders, forKey: Keys.includeSubfolders)
+        get { dataFolder.settings.includeSubfolders }
+        set {
+            guard newValue != includeSubfolders else { return }
+            dataFolder.updateSettings { $0.includeSubfolders = newValue }
             restartWatching()
             reload()
         }
     }
-    /// After rating/flagging a single photo, move to the next one (culling).
-    var autoAdvance: Bool { didSet { UserDefaults.standard.set(autoAdvance, forKey: Keys.autoAdvance) } }
+    /// After rating/flagging a single photo, move to the next one (culling). Stored in Settings.json.
+    var autoAdvance: Bool {
+        get { dataFolder.settings.autoAdvance }
+        set { dataFolder.updateSettings { $0.autoAdvance = newValue } }
+    }
 
     // Presentation requests (sheets / confirmations), triggered from menus anywhere in the UI.
     var namePrompt: NamePrompt?
@@ -126,14 +136,11 @@ final class BrowserModel {
     @ObservationIgnored private let tagStore = TagStore()
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var watcher: FileSystemWatcher?
-    @ObservationIgnored private var rootBookmarks: [Data] = []
 
-    init(library: LibraryModel) {
-        self.library = library
+    init(dataFolder: DataFolderModel) {
+        self.dataFolder = dataFolder
         let defaults = UserDefaults.standard
-        includeSubfolders = defaults.bool(forKey: Keys.includeSubfolders)
-        autoAdvance = defaults.object(forKey: Keys.autoAdvance) as? Bool ?? true
-        loadRoots()
+        syncSidebarWithSettings()
         if let last = defaults.string(forKey: Keys.lastFolder), FileManager.default.fileExists(atPath: last) {
             open(.folder(URL(fileURLWithPath: last, isDirectory: true)))
         }
@@ -147,7 +154,7 @@ final class BrowserModel {
     }
 
     var currentCollection: PhotoCollection? {
-        if case .collection(let id) = source { return library.collection(id) }
+        if case .collection(let id) = source { return dataFolder.collection(id) }
         return nil
     }
 
@@ -281,7 +288,7 @@ final class BrowserModel {
             let recursive = includeSubfolders
             return { try FolderScanner.photos(in: url, recursive: recursive) }
         case .collection(let id):
-            guard let collection = library.collection(id) else { return { [] } }
+            guard let collection = dataFolder.collection(id) else { return { [] } }
             switch collection.kind {
             case .manual:
                 let items = collection.itemURLs
@@ -324,33 +331,19 @@ final class BrowserModel {
     }
 
     func refresh() {
-        rootNodes = rootNodes.map { FolderNode(url: $0.url) }
-        library.reload()
+        dataFolder.reload()
+        syncSidebarWithSettings(force: true)
         reload()
     }
 
     // MARK: - Sidebar folders
 
-    private func loadRoots() {
-        let defaults = UserDefaults.standard
-        var roots: [URL] = []
-        if let stored = defaults.array(forKey: Keys.rootBookmarks) as? [Data] {
-            for data in stored {
-                guard let resolved = FolderAccess.resolve(data) else { continue }
-                roots.append(resolved.url)
-                rootBookmarks.append(resolved.refreshed ?? data)
-            }
-        } else {
-            // First launch, or migrating from v0.1 which stored plain paths.
-            var urls = (defaults.stringArray(forKey: Keys.legacyRoots) ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
-            if urls.isEmpty { urls = [PortablePath.homeDirectory.appendingPathComponent("Pictures", isDirectory: true)] }
-            for url in urls where FileManager.default.isReadableFile(atPath: url.path) {
-                roots.append(url)
-                if let bookmark = FolderAccess.grant(url) { rootBookmarks.append(bookmark) }
-            }
-        }
-        rootNodes = roots.map(FolderNode.init)
-        saveRoots()
+    /// Rebuilds the sidebar from `Settings.json`. Called at launch and whenever the settings change
+    /// (including changes synced from another Mac).
+    func syncSidebarWithSettings(force: Bool = false) {
+        let urls = dataFolder.settings.sidebarFolderURLs
+        guard force || urls != rootNodes.map(\.url) else { return }
+        rootNodes = urls.map { FolderNode(url: $0, isAccessible: FolderAccess.restoreAccess(to: $0)) }
     }
 
     func addRootFoldersInteractively() {
@@ -366,25 +359,48 @@ final class BrowserModel {
     }
 
     func addRootFolders(_ urls: [URL]) {
-        for url in urls where !rootNodes.contains(where: { $0.url == url }) {
-            guard let bookmark = FolderAccess.grant(url) else { continue }
-            rootNodes.append(FolderNode(url: url))
-            rootBookmarks.append(bookmark)
+        for url in urls { FolderAccess.rememberGrant(for: url) }
+        dataFolder.updateSettings { settings in
+            for url in urls {
+                let path = PortablePath.string(url)
+                if !settings.sidebarFolders.contains(path) { settings.sidebarFolders.append(path) }
+            }
         }
-        saveRoots()
+        syncSidebarWithSettings(force: true)
     }
 
     func removeRootFolder(_ url: URL) {
-        guard let index = rootNodes.firstIndex(where: { $0.url == url }) else { return }
-        rootNodes.remove(at: index)
-        if index < rootBookmarks.count { rootBookmarks.remove(at: index) }
-        saveRoots()
+        let path = PortablePath.string(url)
+        dataFolder.updateSettings { $0.sidebarFolders.removeAll { $0 == path } }
+        syncSidebarWithSettings()
     }
 
     func isRoot(_ url: URL) -> Bool { rootNodes.contains { $0.url == url } }
 
-    private func saveRoots() {
-        UserDefaults.standard.set(rootBookmarks, forKey: Keys.rootBookmarks)
+    func isAccessible(_ url: URL) -> Bool {
+        rootNodes.first { $0.url == url }?.isAccessible ?? true
+    }
+
+    /// Asks the user to grant this Mac access to a sidebar folder (needed in the sandboxed app for
+    /// folders outside ~/Pictures that came from another Mac's Settings.json).
+    func grantAccessInteractively(to url: URL) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.directoryURL = url
+        panel.prompt = "Grant Access"
+        panel.message = "Photo Organizer needs your permission to open “\(url.lastPathComponent)” on this Mac. Select the folder and click Grant Access."
+        guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        FolderAccess.rememberGrant(for: chosen)
+        if chosen.standardizedFileURL != url.standardizedFileURL {
+            // The user picked a different folder (e.g. it lives elsewhere on this Mac): use that one.
+            let old = PortablePath.string(url), new = PortablePath.string(chosen)
+            dataFolder.updateSettings { settings in
+                settings.sidebarFolders = settings.sidebarFolders.map { $0 == old ? new : $0 }
+            }
+        }
+        syncSidebarWithSettings(force: true)
+        open(chosen)
     }
 
     // MARK: - Selection
@@ -554,31 +570,31 @@ final class BrowserModel {
     func createCollection(named name: String, adding urls: [URL] = []) {
         var collection = PhotoCollection(name: name, kind: .manual)
         collection.add(urls)
-        library.save(collection)
+        dataFolder.save(collection)
     }
 
     func saveSearchAsSmartCollection(named name: String) {
         var folders: [String] = []
         if let folder = currentFolder { folders = [PortablePath.string(folder)] }
         let collection = PhotoCollection(name: name, kind: .smart, folders: folders, criteria: criteria)
-        if library.save(collection) { open(.collection(collection.id)) }
+        if dataFolder.save(collection) { open(.collection(collection.id)) }
     }
 
     func saveSmartCollectionChanges() {
         guard var collection = currentCollection, collection.kind == .smart else { return }
         collection.criteria = criteria
-        library.save(collection)
+        dataFolder.save(collection)
     }
 
     func renameCollection(_ id: UUID, to name: String) {
-        guard var collection = library.collection(id), !name.isEmpty else { return }
+        guard var collection = dataFolder.collection(id), !name.isEmpty else { return }
         collection.name = name
-        library.save(collection)
+        dataFolder.save(collection)
     }
 
     func deleteCollection(_ id: UUID) {
-        guard let collection = library.collection(id) else { return }
-        library.delete(collection)
+        guard let collection = dataFolder.collection(id) else { return }
+        dataFolder.delete(collection)
         if source == .collection(id) {
             source = nil
             photos = []
@@ -589,7 +605,7 @@ final class BrowserModel {
 
     func removeFromCurrentCollection(_ urls: [URL]) {
         guard let collection = currentCollection, collection.kind == .manual else { return }
-        library.remove(urls, from: collection.id)
+        dataFolder.remove(urls, from: collection.id)
         reload()
     }
 
@@ -650,14 +666,14 @@ final class BrowserModel {
     }
 
     private func refreshSidebar() {
-        rootNodes = rootNodes.map { FolderNode(url: $0.url) }
+        syncSidebarWithSettings(force: true)
     }
 
     private func runFileOperation(_ verb: String, relocates: Bool = false, reselect: Bool = false,
                                   _ operation: @escaping @Sendable () -> FileOperationResult) {
         Task {
             let result = await Task.detached(priority: .userInitiated) { operation() }.value
-            if relocates { library.relocate(result.completed) }
+            if relocates { dataFolder.relocate(result.completed) }
             if reselect {
                 selection = Set(result.completed.values)
                 focused = focused.flatMap { result.completed[$0] }

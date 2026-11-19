@@ -15,20 +15,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct PhotoOrganizerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @State private var library: LibraryModel
+    @State private var dataFolder: DataFolderModel
     @State private var browser: BrowserModel
-    @State private var editors = EditorSettings()
+    @State private var editors: EditorSettings
 
     init() {
-        let library = LibraryModel()
-        _library = State(initialValue: library)
-        _browser = State(initialValue: BrowserModel(library: library))
+        // Used by scripts/build-app.sh to produce the .icns (renders and exits before any UI or data).
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--render-icon"), i + 1 < args.count {
+            AppIcon.writePNG(to: args[i + 1], size: 1024)
+            exit(0)
+        }
+        let dataFolder = DataFolderModel()
+        dataFolder.applyAppearance()  // before the first window appears
+        _dataFolder = State(initialValue: dataFolder)
+        _browser = State(initialValue: BrowserModel(dataFolder: dataFolder))
+        _editors = State(initialValue: EditorSettings(dataFolder: dataFolder))
     }
 
     var body: some Scene {
         Window("Photo Organizer", id: "main") {
             ContentView()
-                .environment(library)
+                .environment(dataFolder)
                 .environment(browser)
                 .environment(editors)
                 .frame(minWidth: 960, minHeight: 600)
@@ -41,7 +49,7 @@ struct PhotoOrganizerApp: App {
 
         Settings {
             SettingsView()
-                .environment(library)
+                .environment(dataFolder)
                 .environment(browser)
                 .environment(editors)
         }

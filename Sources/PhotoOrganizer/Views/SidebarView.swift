@@ -4,12 +4,19 @@ import SwiftUI
 
 struct SidebarView: View {
     @Environment(BrowserModel.self) private var browser
-    @Environment(LibraryModel.self) private var library
+    @Environment(DataFolderModel.self) private var dataFolder
 
     var body: some View {
         let selection = Binding<BrowseSource?>(
             get: { browser.source },
-            set: { if let source = $0 { browser.open(source) } })
+            set: { source in
+                guard let source else { return }
+                if case .folder(let url) = source, !browser.isAccessible(url) {
+                    browser.grantAccessInteractively(to: url)
+                } else {
+                    browser.open(source)
+                }
+            })
 
         List(selection: selection) {
             Section("Folders") {
@@ -19,11 +26,11 @@ struct SidebarView: View {
                 }
             }
             Section("Collections") {
-                ForEach(library.collections) { collection in
+                ForEach(dataFolder.collections) { collection in
                     CollectionRow(collection: collection)
                         .tag(BrowseSource.collection(collection.id))
                 }
-                if library.collections.isEmpty {
+                if dataFolder.collections.isEmpty {
                     Text("Use “Add to Collection” on photos, or save a search.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -60,15 +67,20 @@ private struct FolderRow: View {
     @State private var isTargeted = false
 
     var body: some View {
-        Label(node.name, systemImage: browser.isRoot(node.url) ? "folder.fill" : "folder")
+        Label(node.name, systemImage: !node.isAccessible ? "lock.fill" : browser.isRoot(node.url) ? "folder.fill" : "folder")
             .lineLimit(1)
-            .help(node.url.path)
+            .foregroundStyle(node.isAccessible ? .primary : .secondary)
+            .help(node.isAccessible ? node.url.path : "\(node.url.path)\nClick to grant this Mac access to the folder.")
             .padding(.vertical, 1)
             .background(RoundedRectangle(cornerRadius: 4).fill(isTargeted ? Color.accentColor.opacity(0.3) : .clear))
             .dropDestination(for: URL.self) { urls, _ in
                 browser.handleDrop(urls, onto: node.url, copy: NSEvent.modifierFlags.contains(.option))
             } isTargeted: { isTargeted = $0 }
             .contextMenu {
+                if !node.isAccessible {
+                    Button("Grant Access…") { browser.grantAccessInteractively(to: node.url) }
+                    Divider()
+                }
                 Button("New Folder…") {
                     browser.namePrompt = NamePrompt(purpose: .newFolder(in: node.url))
                 }
@@ -108,7 +120,7 @@ private struct CollectionRow: View {
             guard collection.kind == .manual else { return false }
             var files = urls
             if files.count == 1, browser.selection.contains(files[0]) { files = browser.selectedURLs }
-            browser.library.add(files, to: collection.id)
+            browser.dataFolder.add(files, to: collection.id)
             return true
         } isTargeted: { isTargeted = $0 && collection.kind == .manual }
         .contextMenu {
@@ -116,7 +128,7 @@ private struct CollectionRow: View {
                 browser.namePrompt = NamePrompt(purpose: .renameCollection(collection.id), initialName: collection.name)
             }
             Button("Reveal File in Finder") {
-                browser.library.revealInFinder()
+                browser.dataFolder.revealInFinder()
             }
             Divider()
             Button("Delete Collection", role: .destructive) {

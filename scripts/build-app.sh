@@ -1,13 +1,16 @@
 #!/bin/zsh
-# Builds PhotoOrganizer.app into ./build.
+# Builds "Photo Organizer.app" into ./build (the development build).
 #
-#   ./scripts/build-app.sh                  release build, App Sandbox enabled
-#   ./scripts/build-app.sh --no-sandbox     release build without the sandbox
+#   ./scripts/build-app.sh                  release configuration, App Sandbox on
+#   ./scripts/build-app.sh --no-sandbox     without the sandbox
 #   ./scripts/build-app.sh --debug          debug configuration
 #
-# Signs with the first "Apple Development" identity in the keychain (override with
-# SIGN_IDENTITY="..."), falling back to ad-hoc signing. A stable identity matters for the sandboxed
-# build: macOS ties the app's container and saved folder bookmarks to its signature.
+# Signs with the "Developer ID Application" identity (the one ./scripts/package.sh releases with),
+# else "Apple Development", else ad hoc; override with SIGN_IDENTITY="...". Dev and release builds
+# must share a team: macOS ties the sandboxed app's container and saved folder bookmarks to it, and
+# asks "access data from other apps?" when a differently signed build opens the same container.
+# For a distributable, notarized DMG use ./scripts/package.sh, which re-signs a copy with the
+# Developer ID.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -21,35 +24,35 @@ for arg in "$@"; do
     esac
 done
 
-APP="build/PhotoOrganizer.app"
+APP="build/Photo Organizer.app"
 swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/PhotoOrganizer"
 
-rm -rf "$APP"
+rm -rf "$APP" build/PhotoOrganizer.app   # (the latter: the bundle's name before v0.3)
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PhotoOrganizer"
+cp Resources/Info.plist "$APP/Contents/Info.plist"
+install -m 644 LICENSE "$APP/Contents/Resources/LICENSE.txt"   # MIT, travels with every copy
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleName</key><string>Photo Organizer</string>
-    <key>CFBundleDisplayName</key><string>Photo Organizer</string>
-    <key>CFBundleIdentifier</key><string>local.photoorganizer</string>
-    <key>CFBundleExecutable</key><string>PhotoOrganizer</string>
-    <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.0</string>
-    <key>CFBundleVersion</key><string>2</string>
-    <key>LSMinimumSystemVersion</key><string>15.0</string>
-    <key>LSApplicationCategoryType</key><string>public.app-category.photography</string>
-    <key>NSHighResolutionCapable</key><true/>
-    <key>NSPrincipalClass</key><string>NSApplication</string>
-</dict>
-</plist>
-PLIST
+# Build provenance.
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then COMMIT="$COMMIT (modified)"; fi
+/usr/libexec/PlistBuddy -c "Add :PhotoOrganizerGitCommit string $COMMIT" "$APP/Contents/Info.plist"
 
-IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)}"
+# App icon, rendered by the app itself (Services/AppIcon.swift).
+ICONSET="build/AppIcon.iconset"
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+"$BIN" --render-icon build/icon-1024.png
+for s in 16 32 128 256 512; do
+    sips -z $s $s build/icon-1024.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s*2)) $((s*2)) build/icon-1024.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$ICONSET" build/icon-1024.png
+
+IDENTITIES="$(security find-identity -v -p codesigning)"
+IDENTITY="${SIGN_IDENTITY:-$(sed -n 's/.*"\(Developer ID Application[^"]*\)".*/\1/p' <<<"$IDENTITIES" | head -1)}"
+IDENTITY="${IDENTITY:-$(sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' <<<"$IDENTITIES" | head -1)}"
 IDENTITY="${IDENTITY:--}"
 SIGN_ARGS=(--force --sign "$IDENTITY" --options runtime)
 if [[ "$SANDBOX" == 1 ]]; then

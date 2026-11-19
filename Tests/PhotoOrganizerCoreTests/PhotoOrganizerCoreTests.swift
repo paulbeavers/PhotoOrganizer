@@ -336,16 +336,16 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
     }
 }
 
-@Suite struct KeywordLibraryTests {
+@Suite struct KeywordListTests {
     @Test func parsesAndWritesLightroomFormat() {
         let text = "Places\n\tIceland\n\t\tVík\n\t\t{Vik}\n[People]\n\tAnna\nsunset\n"
-        var library = KeywordLibrary(text: text)
-        #expect(library.paths == ["Places", "Places|Iceland", "Places|Iceland|Vík", "People", "People|Anna", "sunset"])
-        library.add("Places|Norway|Lofoten")
-        #expect(library.contains("places|norway"))
-        #expect(library.text == "[People]\n\tAnna\nPlaces\n\tIceland\n\t\tVík\n\t\t\t{Vik}\n\tNorway\n\t\tLofoten\nsunset\n")
-        library.remove("Places|Iceland")
-        #expect(!library.contains("Places|Iceland|Vík"))
+        var list = KeywordList(text: text)
+        #expect(list.paths == ["Places", "Places|Iceland", "Places|Iceland|Vík", "People", "People|Anna", "sunset"])
+        list.add("Places|Norway|Lofoten")
+        #expect(list.contains("places|norway"))
+        #expect(list.text == "[People]\n\tAnna\nPlaces\n\tIceland\n\t\tVík\n\t\t\t{Vik}\n\tNorway\n\t\tLofoten\nsunset\n")
+        list.remove("Places|Iceland")
+        #expect(!list.contains("Places|Iceland|Vík"))
     }
 
     @Test func buildsTree() {
@@ -365,5 +365,155 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
         try writeJPEG(to: sub.appendingPathComponent("2.jpg"))
         #expect(try FolderScanner.photos(in: folder).map(\.name) == ["1.jpg"])
         #expect(try FolderScanner.photos(in: folder, recursive: true).map(\.name) == ["1.jpg", "2.jpg"])
+    }
+}
+
+@Suite struct SharedSettingsTests {
+    @Test func roundTripsThroughSettingsFile() throws {
+        let folder = try makeTempFolder()
+        let store = SharedSettingsStore(folder: folder)
+        #expect(store.load() == nil)
+
+        var settings = SharedSettings()
+        settings.sidebarFolders = [PortablePath.string(PortablePath.homeDirectory.appendingPathComponent("Pictures")), "/Volumes/Photos"]
+        let editor = ExternalEditor(name: "NX Studio", appURL: URL(fileURLWithPath: "/Applications/NX Studio.app"),
+                                    fileExtensions: ["nef"], bundleIdentifier: "com.example.nx")
+        settings.editors = [editor]
+        settings.defaultEditorID = editor.id
+        settings.autoAdvance = false
+        try store.save(settings)
+
+        #expect(store.load() == settings)
+        let json = try String(contentsOf: store.fileURL, encoding: .utf8)
+        #expect(json.contains("\"~/Pictures\""))
+        #expect(json.contains("\"/Volumes/Photos\""))
+    }
+
+    @Test func toleratesMissingKeysAndOldEditors() throws {
+        let json = """
+        {"sidebarFolders": ["~/Pictures"],
+         "editors": [{"id": "6F1A3B9E-1C2D-4E5F-8A9B-0C1D2E3F4A5B", "name": "PS",
+                      "appURL": "file:///Applications/PS.app", "fileExtensions": []}]}
+        """
+        let settings = try JSONDecoder().decode(SharedSettings.self, from: Data(json.utf8))
+        #expect(settings.sidebarFolders == ["~/Pictures"])
+        #expect(settings.editors.first?.bundleIdentifier == nil)
+        #expect(settings.autoAdvance == true)
+        #expect(settings.renameTemplate == SharedSettings().renameTemplate)
+        #expect(settings.appearance == .system)
+    }
+
+    @Test func appearanceRoundTripsAndToleratesUnknownValues() throws {
+        var settings = SharedSettings()
+        settings.appearance = .dark
+        let data = try JSONEncoder().encode(settings)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"appearance\":\"dark\""))
+        #expect(try JSONDecoder().decode(SharedSettings.self, from: data).appearance == .dark)
+
+        let future = #"{"appearance": "sepia", "autoAdvance": false}"#
+        let decoded = try JSONDecoder().decode(SharedSettings.self, from: Data(future.utf8))
+        #expect(decoded.appearance == .system)
+        #expect(decoded.autoAdvance == false)
+    }
+}
+
+@Suite struct CompanionFileTests {
+    /// Builds an NX Studio-style folder: DSC_1.NEF/.JPG, an XMP sidecar, NKSC_PARAM/DSC_1.NEF.nksc,
+    /// and RawTherapee .pp3 files next to each photo.
+    private func makeShoot(in folder: URL, _ base: String = "DSC_1") throws -> (raw: URL, jpg: URL) {
+        let raw = folder.appendingPathComponent("\(base).NEF"), jpg = folder.appendingPathComponent("\(base).JPG")
+        try Data("raw".utf8).write(to: raw)
+        try writeJPEG(to: jpg)
+        try TagStore().update(raw) { $0.rating = 3 }
+        let nksc = folder.appendingPathComponent("NKSC_PARAM")
+        try FileManager.default.createDirectory(at: nksc, withIntermediateDirectories: true)
+        try Data("nx-edits".utf8).write(to: nksc.appendingPathComponent("\(base).NEF.nksc"))
+        try Data("rt-raw".utf8).write(to: folder.appendingPathComponent("\(base).NEF.pp3"))
+        try Data("rt-jpg".utf8).write(to: folder.appendingPathComponent("\(base).JPG.pp3"))
+        return (raw, jpg)
+    }
+
+    private func exists(_ folder: URL, _ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent(path).path)
+    }
+
+    @Test func locatesCompanionFiles() throws {
+        let folder = try makeTempFolder()
+        let shoot = try makeShoot(in: folder)
+        #expect(Set(CompanionFileType.existing(for: shoot.raw).map(\.url.lastPathComponent)) == ["DSC_1.NEF.nksc", "DSC_1.NEF.pp3"])
+        #expect(CompanionFileType.existing(for: shoot.jpg).map(\.url.lastPathComponent) == ["DSC_1.JPG.pp3"])
+    }
+
+    @Test func moveCarriesEditsIncludingNKSCFolder() throws {
+        let source = try makeTempFolder(), destination = try makeTempFolder()
+        let shoot = try makeShoot(in: source)
+        let result = FileOperations.move([shoot.raw, shoot.jpg], to: destination)
+        #expect(!result.hasFailures)
+        for path in ["DSC_1.NEF", "DSC_1.JPG", "DSC_1.xmp", "NKSC_PARAM/DSC_1.NEF.nksc", "DSC_1.NEF.pp3", "DSC_1.JPG.pp3"] {
+            #expect(exists(destination, path), "\(path) should be at the destination")
+            #expect(!exists(source, path), "\(path) should be gone from the source")
+        }
+        #expect(try Data(contentsOf: destination.appendingPathComponent("NKSC_PARAM/DSC_1.NEF.nksc")) == Data("nx-edits".utf8))
+    }
+
+    @Test func copyDuplicatesEdits() throws {
+        let source = try makeTempFolder(), destination = try makeTempFolder()
+        let shoot = try makeShoot(in: source)
+        _ = FileOperations.copy([shoot.raw], to: destination)
+        #expect(exists(destination, "NKSC_PARAM/DSC_1.NEF.nksc"))
+        #expect(exists(source, "NKSC_PARAM/DSC_1.NEF.nksc"))
+        #expect(!exists(destination, "DSC_1.JPG.pp3"), "only the copied photo's edits travel")
+    }
+
+    @Test func copyAvoidsLeftoverEditsAtDestination() throws {
+        let source = try makeTempFolder(), destination = try makeTempFolder()
+        let shoot = try makeShoot(in: source)
+        // An orphaned NX Studio file for a photo that no longer exists at the destination.
+        try FileManager.default.createDirectory(at: destination.appendingPathComponent("NKSC_PARAM"), withIntermediateDirectories: true)
+        try Data("stale".utf8).write(to: destination.appendingPathComponent("NKSC_PARAM/DSC_1.NEF.nksc"))
+        let result = FileOperations.copy([shoot.raw], to: destination)
+        #expect(!result.hasFailures)
+        #expect(result.completed[shoot.raw]?.lastPathComponent == "DSC_1-2.NEF")
+        #expect(try Data(contentsOf: destination.appendingPathComponent("NKSC_PARAM/DSC_1-2.NEF.nksc")) == Data("nx-edits".utf8))
+        #expect(try Data(contentsOf: destination.appendingPathComponent("NKSC_PARAM/DSC_1.NEF.nksc")) == Data("stale".utf8))
+    }
+
+    @Test func renameRenamesEdits() throws {
+        let folder = try makeTempFolder()
+        let shoot = try makeShoot(in: folder)
+        let plan = RenamePlan(urls: [shoot.raw, shoot.jpg], template: "Trip_{n:3}")
+        #expect(plan.problems.isEmpty)
+        #expect(!FileOperations.rename(plan.items).hasFailures)
+        for path in ["Trip_001.NEF", "Trip_001.JPG", "Trip_001.xmp", "NKSC_PARAM/Trip_001.NEF.nksc", "Trip_001.NEF.pp3", "Trip_001.JPG.pp3"] {
+            #expect(exists(folder, path), "\(path) should exist after rename")
+        }
+        #expect(!exists(folder, "NKSC_PARAM/DSC_1.NEF.nksc"))
+    }
+
+    @Test func renameReportsEditCollisions() throws {
+        let folder = try makeTempFolder()
+        let shoot = try makeShoot(in: folder)
+        try Data("other".utf8).write(to: folder.appendingPathComponent("NKSC_PARAM/Taken.NEF.nksc"))
+        let plan = RenamePlan(urls: [shoot.raw], template: "Taken")
+        #expect(plan.problems.contains { $0.contains("NX Studio") })
+    }
+
+    @Test func trashRemovesEdits() throws {
+        let folder = try makeTempFolder()
+        let shoot = try makeShoot(in: folder)
+        let result = FileOperations.trash([shoot.raw])
+        #expect(!result.hasFailures)
+        #expect(!exists(folder, "NKSC_PARAM/DSC_1.NEF.nksc"))
+        #expect(!exists(folder, "DSC_1.NEF.pp3"))
+        #expect(exists(folder, "DSC_1.JPG.pp3"), "the JPEG's own edits stay")
+        #expect(exists(folder, "DSC_1.xmp"), "the shared sidecar stays while the JPEG remains")
+    }
+
+    @Test func editorFoldersAreHiddenFromTheTree() throws {
+        let folder = try makeTempFolder()
+        _ = try makeShoot(in: folder)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("Selects"), withIntermediateDirectories: true)
+        #expect(FolderScanner.subfolders(of: folder).map(\.lastPathComponent) == ["Selects"])
+        #expect(try FolderScanner.photos(in: folder, recursive: true).count == 2)
     }
 }

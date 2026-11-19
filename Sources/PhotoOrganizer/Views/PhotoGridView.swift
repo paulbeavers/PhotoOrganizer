@@ -214,8 +214,12 @@ struct PhotoCell: View {
                 .foregroundStyle(.orange)
         }
         .padding(Self.inset)
-        .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? Color.accentColor.opacity(0.25) : .clear))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2))
+        // Every cell gets a light gray box; selection swaps it for the accent color.
+        // `primary` with low opacity reads as light gray in Light Mode and stays subtle in Dark Mode.
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(isSelected ? Color.accentColor.opacity(0.25) : Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.15), lineWidth: isSelected ? 2 : 1))
         .contentShape(Rectangle())
         .help(photo.url.path)
         .task(id: "\(photo.url.path)|\(photo.modified.timeIntervalSinceReferenceDate)|\(pixelSize)") {
@@ -246,7 +250,7 @@ struct PhotoCell: View {
 struct PhotoContextMenu: View {
     @Environment(BrowserModel.self) private var browser
     @Environment(EditorSettings.self) private var editors
-    @Environment(LibraryModel.self) private var library
+    @Environment(DataFolderModel.self) private var dataFolder
     let url: URL
 
     var body: some View {
@@ -269,6 +273,10 @@ struct PhotoContextMenu: View {
             browser.startReview()
         }
         Divider()
+        Button("Pick") { browser.pick(targets) }
+        Button("Unflag") { browser.unflag(targets) }
+        Button("Reject") { browser.reject(targets) }
+        Divider()
         Menu("Rating") {
             ForEach(0...5, id: \.self) { rating in
                 Button(rating == 0 ? "No Rating" : String(repeating: "★", count: rating)) {
@@ -283,14 +291,9 @@ struct PhotoContextMenu: View {
             Divider()
             Button("No Label") { browser.setLabel(nil, for: targets) }
         }
-        Menu("Flag") {
-            Button("Pick") { browser.pick(targets) }
-            Button("Reject") { browser.reject(targets) }
-            Button("Unflag") { browser.unflag(targets) }
-        }
         Menu("Add to Collection") {
-            ForEach(library.collections.filter { $0.kind == .manual }) { collection in
-                Button(collection.name) { library.add(targets, to: collection.id) }
+            ForEach(dataFolder.collections.filter { $0.kind == .manual }) { collection in
+                Button(collection.name) { dataFolder.add(targets, to: collection.id) }
             }
             Divider()
             Button("New Collection…") {

@@ -8,12 +8,17 @@ public struct ExternalEditor: Identifiable, Codable, Hashable, Sendable {
     /// Lower-case file extensions this editor is preferred for (e.g. ["nef", "nrw"]).
     /// Empty means no specific preference.
     public var fileExtensions: [String]
+    /// The app's bundle identifier, used to find it when `appURL` doesn't exist (e.g. settings
+    /// synced from another Mac where the app is installed elsewhere).
+    public var bundleIdentifier: String?
 
-    public init(id: UUID = UUID(), name: String, appURL: URL, fileExtensions: [String] = []) {
+    public init(id: UUID = UUID(), name: String, appURL: URL, fileExtensions: [String] = [],
+                bundleIdentifier: String? = nil) {
         self.id = id
         self.name = name
         self.appURL = appURL
         self.fileExtensions = fileExtensions.map { $0.lowercased() }
+        self.bundleIdentifier = bundleIdentifier ?? Bundle(url: appURL)?.bundleIdentifier
     }
 
     public func handles(_ url: URL) -> Bool {

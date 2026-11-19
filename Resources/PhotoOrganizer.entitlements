@@ -4,11 +4,11 @@
 <dict>
     <!-- Run in the App Sandbox. -->
     <key>com.apple.security.app-sandbox</key><true/>
-    <!-- Read/write folders the user picks in open panels or drags in (photos, sidecars, library). -->
+    <!-- Read/write folders the user picks in open panels or drags in (photos, sidecars, data folder). -->
     <key>com.apple.security.files.user-selected.read-write</key><true/>
     <!-- Remember those folders across launches with security-scoped bookmarks. -->
     <key>com.apple.security.files.bookmarks.app-scope</key><true/>
-    <!-- ~/Pictures: the default sidebar folder and default library location. -->
+    <!-- ~/Pictures: the default sidebar folder and default data folder location. -->
     <key>com.apple.security.assets.pictures.read-write</key><true/>
 </dict>
 </plist>

@@ -11,7 +11,7 @@ import Foundation
 /// 	Anna
 /// 	{Annie}       <- braces: synonym of the line above (preserved, not used)
 /// ```
-public struct KeywordLibrary: Equatable, Sendable {
+public struct KeywordList: Equatable, Sendable {
     /// Every keyword as a full path ("Places|Iceland|Vík"), parents included, in file order.
     public private(set) var paths: [String] = []
     /// Synonym lines keyed by the keyword path they belong to (kept so saving doesn't lose them).

@@ -7,7 +7,6 @@ struct BatchRenameSheet: View {
     @Environment(\.dismiss) private var dismiss
     let urls: [URL]
 
-    @AppStorage("renameTemplate") private var savedTemplate = "{date:yyyyMMdd}_{n:4}"
     @State private var template = ""
     @State private var startNumber = 1
     @State private var plan: RenamePlan?
@@ -41,7 +40,7 @@ struct BatchRenameSheet: View {
             HStack {
                 Stepper("Start numbering at \(startNumber)", value: $startNumber, in: 0...999_999)
                 Spacer()
-                Text("Extensions are kept. RAW+JPEG pairs get the same name and keep their shared sidecar.")
+                Text("Extensions are kept. RAW+JPEG pairs get the same name. XMP sidecars and NX Studio, RawTherapee and DxO edit files are renamed with their photos.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -64,7 +63,7 @@ struct BatchRenameSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Rename") {
                     guard let plan else { return }
-                    savedTemplate = template
+                    browser.dataFolder.updateSettings { $0.renameTemplate = template }
                     browser.rename(plan.items)
                     dismiss()
                 }
@@ -76,7 +75,7 @@ struct BatchRenameSheet: View {
         .frame(width: 640, height: 480)
         .onAppear {
             // A single photo starts from its current name; batches from the last template used.
-            template = urls.count == 1 ? urls[0].deletingPathExtension().lastPathComponent : savedTemplate
+            template = urls.count == 1 ? urls[0].deletingPathExtension().lastPathComponent : browser.dataFolder.settings.renameTemplate
         }
         .task(id: "\(template)|\(startNumber)") {
             let urls = urls, template = template, start = startNumber

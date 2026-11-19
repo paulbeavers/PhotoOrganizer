@@ -1,11 +1,44 @@
 import Foundation
+import PhotoOrganizerCore
 
-/// Persists access to user-chosen folders with security-scoped bookmarks.
+/// Keeps access to user-chosen folders with security-scoped bookmarks.
 ///
 /// In the sandboxed build the app may only touch folders the user picked (open panel or drag and
-/// drop). A security-scoped bookmark lets it regain that access on the next launch. Outside the
-/// sandbox the same code works, with the scope simply being a no-op.
+/// drop). A security-scoped bookmark regains that access on the next launch. Bookmarks only work on
+/// the Mac that created them, so they are stored locally (keyed by the folder's portable path) and
+/// never in the synced data folder. Outside the sandbox the same code works and the scope is a no-op.
 enum FolderAccess {
+    private static let grantsKey = "folderAccessGrants"
+
+    // MARK: - Per-folder grants (sidebar folders)
+
+    /// Restores this Mac's saved access to `url`, if any. Returns whether the folder can be read.
+    @discardableResult
+    static func restoreAccess(to url: URL) -> Bool {
+        let key = PortablePath.string(url)
+        if let data = grants[key], let resolved = resolve(data) {
+            if let refreshed = resolved.refreshed { grants[key] = refreshed }
+        }
+        return canRead(url)
+    }
+
+    /// Starts access for a folder the user just granted (open panel / drop) and remembers it.
+    static func rememberGrant(for url: URL) {
+        guard let bookmark = grant(url) else { return }
+        grants[PortablePath.string(url)] = bookmark
+    }
+
+    static func canRead(_ url: URL) -> Bool {
+        (try? FileManager.default.contentsOfDirectory(atPath: url.path)) != nil
+    }
+
+    private static var grants: [String: Data] {
+        get { UserDefaults.standard.dictionary(forKey: grantsKey) as? [String: Data] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: grantsKey) }
+    }
+
+    // MARK: - Bookmarks
+
     static func bookmark(for url: URL) -> Data? {
         (try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil))
             ?? (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil))
@@ -22,13 +55,14 @@ enum FolderAccess {
         return (url, stale ? bookmark(for: url) : nil)
     }
 
-    /// Starts access for a URL the user just granted (open panel / drop) and returns its bookmark.
+    /// Starts access for a URL the user just granted and returns its bookmark.
     static func grant(_ url: URL) -> Data? {
         _ = url.startAccessingSecurityScopedResource()
         return bookmark(for: url)
     }
 
-    static var isSandboxed: Bool {
-        ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+    /// Records a grant that was migrated from an older settings format.
+    static func storeGrant(_ bookmark: Data, for url: URL) {
+        grants[PortablePath.string(url)] = bookmark
     }
 }

@@ -1,5 +1,40 @@
 import Foundation
 
+/// An editor's per-photo settings file, which must travel with the photo it belongs to.
+///
+/// Unlike the shared XMP sidecar (`IMG_1.xmp`, one per base name), these are named after the photo's
+/// *full* file name, so each file of a RAW+JPEG pair has its own.
+public struct CompanionFileType: Sendable, Hashable {
+    public let editor: String
+    /// Subfolder of the photo's folder that holds the file, or `nil` for "next to the photo".
+    public let subfolder: String?
+    /// Appended to the photo's full file name, e.g. ".nksc" → "DSC_0001.NEF.nksc".
+    public let suffix: String
+
+    public static let nxStudio = CompanionFileType(editor: "NX Studio", subfolder: "NKSC_PARAM", suffix: ".nksc")
+    public static let rawTherapee = CompanionFileType(editor: "RawTherapee", subfolder: nil, suffix: ".pp3")
+    public static let dxoPhotoLab = CompanionFileType(editor: "DxO PhotoLab", subfolder: nil, suffix: ".dop")
+
+    /// Every companion type the app keeps with photos. Add new editors here.
+    public static let all: [CompanionFileType] = [.nxStudio, .rawTherapee, .dxoPhotoLab]
+
+    /// Where this type's file for `photo` lives (whether or not it exists).
+    public func url(for photo: URL) -> URL {
+        var folder = photo.deletingLastPathComponent()
+        if let subfolder { folder.appendPathComponent(subfolder, isDirectory: true) }
+        return folder.appendingPathComponent(photo.lastPathComponent + suffix)
+    }
+
+    /// The companion files that exist for `photo`.
+    public static func existing(for photo: URL) -> [(type: CompanionFileType, url: URL)] {
+        all.map { ($0, $0.url(for: photo)) }
+            .filter { FileManager.default.fileExists(atPath: $0.1.path) }
+    }
+
+    /// Editor folders that hold companion files; hidden from the sidebar folder tree.
+    public static var folderNames: Set<String> { Set(all.compactMap(\.subfolder)) }
+}
+
 /// Result of a batch file operation: what moved where, and what failed.
 public struct FileOperationResult: Sendable {
     /// Original photo URL -> new photo URL (for trash, the URL in the Trash).
@@ -14,6 +49,9 @@ public struct FileOperationResult: Sendable {
 /// Files are processed in *groups*: all selected files in one folder that share a base name
 /// (e.g. `DSC_1.NEF` + `DSC_1.JPG`) travel together with their shared sidecar. If only part of a
 /// pair is processed, the sidecar is copied rather than moved so the file left behind keeps its tags.
+///
+/// Each photo's editor settings files (`CompanionFileType`, e.g. NX Studio's
+/// `NKSC_PARAM/<file>.nksc`) are moved, copied, renamed and trashed with that photo.
 public enum FileOperations {
     struct Group {
         let folder: URL
@@ -73,16 +111,29 @@ public enum FileOperations {
             if move, group.folder.standardizedFileURL == destination.standardizedFileURL { continue }
             // Choose a base name that is free in the destination for every member and the sidecar.
             let base = availableBaseName(group.baseName, in: destination,
-                                         extensions: group.members.map(\.pathExtension) + ["xmp"])
+                                         extensions: group.members.map(\.pathExtension) + ["xmp"],
+                                         companionExtensions: group.members.map(\.pathExtension))
             var transferred: [URL] = []
             for source in group.members {
                 let target = destination.appendingPathComponent(base).appendingPathExtension(source.pathExtension)
+                // Read before moving: afterwards the photo is gone from `source`.
+                let companions = CompanionFileType.existing(for: source)
                 do {
                     if move { try fm.moveItem(at: source, to: target) } else { try fm.copyItem(at: source, to: target) }
                     result.completed[source] = target
                     transferred.append(source)
                 } catch {
                     result.failures.append("\(source.lastPathComponent): \(error.localizedDescription)")
+                    continue
+                }
+                for companion in companions {
+                    let companionTarget = companion.type.url(for: target)
+                    do {
+                        try fm.createDirectory(at: companionTarget.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        if move { try fm.moveItem(at: companion.url, to: companionTarget) } else { try fm.copyItem(at: companion.url, to: companionTarget) }
+                    } catch {
+                        result.failures.append("\(companion.url.lastPathComponent) (\(companion.type.editor) settings): \(error.localizedDescription)")
+                    }
                 }
             }
             guard !transferred.isEmpty, group.hasSidecar else { continue }
@@ -101,13 +152,17 @@ public enum FileOperations {
         return result
     }
 
-    /// `base`, or `base-2`, `base-3`... so that no `<base>.<ext>` already exists in `folder`.
-    static func availableBaseName(_ base: String, in folder: URL, extensions: [String]) -> String {
+    /// `base`, or `base-2`, `base-3`... so that no `<base>.<ext>` already exists in `folder`, and no
+    /// companion file (e.g. a leftover `NKSC_PARAM/<base>.NEF.nksc`) is in the way either.
+    static func availableBaseName(_ base: String, in folder: URL, extensions: [String],
+                                  companionExtensions: [String] = []) -> String {
         let fm = FileManager.default
         func isFree(_ candidate: String) -> Bool {
-            extensions.allSatisfy { ext in
-                !fm.fileExists(atPath: folder.appendingPathComponent(candidate).appendingPathExtension(ext).path)
+            let photos = extensions.map { folder.appendingPathComponent(candidate).appendingPathExtension($0) }
+            let companions = companionExtensions.flatMap { ext in
+                CompanionFileType.all.map { $0.url(for: folder.appendingPathComponent(candidate).appendingPathExtension(ext)) }
             }
+            return (photos + companions).allSatisfy { !fm.fileExists(atPath: $0.path) }
         }
         if isFree(base) { return base }
         var n = 2
@@ -123,10 +178,14 @@ public enum FileOperations {
         for group in groups(for: urls) {
             var allTrashed = true
             for url in group.members {
+                let companions = CompanionFileType.existing(for: url)
                 do {
                     var trashed: NSURL?
                     try fm.trashItem(at: url, resultingItemURL: &trashed)
                     result.completed[url] = trashed as URL? ?? url
+                    for companion in companions {
+                        try? fm.trashItem(at: companion.url, resultingItemURL: nil)
+                    }
                 } catch {
                     allTrashed = false
                     result.failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
@@ -147,13 +206,20 @@ public enum FileOperations {
         let fm = FileManager.default
         var result = FileOperationResult()
 
-        struct Step { let from: URL; let temp: URL; let to: URL; let photo: URL?; let copySidecar: Bool }
+        /// `owner`: for an editor settings file, the photo it belongs to. It is only renamed if that
+        /// photo is, so a failed photo rename never separates the photo from its edits.
+        struct Step { let from: URL; let temp: URL; let to: URL; let photo: URL?; let copySidecar: Bool; var owner: URL? = nil }
         var steps: [Step] = []
         for item in plan where item.newBaseName != item.group.baseName {
             let group = item.group
             for member in group.members {
                 let target = group.folder.appendingPathComponent(item.newBaseName).appendingPathExtension(member.pathExtension)
                 steps.append(Step(from: member, temp: temporaryURL(near: member), to: target, photo: member, copySidecar: false))
+                for companion in CompanionFileType.existing(for: member) {
+                    let companionTarget = companion.type.url(for: target)
+                    steps.append(Step(from: companion.url, temp: temporaryURL(near: companion.url), to: companionTarget,
+                                      photo: nil, copySidecar: false, owner: member))
+                }
             }
             if group.hasSidecar {
                 let target = group.folder.appendingPathComponent(item.newBaseName).appendingPathExtension("xmp")
@@ -164,16 +230,23 @@ public enum FileOperations {
 
         // Phase 1: move everything out of the way (shared sidecars are copied, not moved).
         var staged: [Step] = []
+        var failedPhotos = Set<URL>()
         for step in steps {
+            if let owner = step.owner, failedPhotos.contains(owner) { continue }  // leave edits with their photo
             do {
                 if step.copySidecar { try fm.copyItem(at: step.from, to: step.temp) } else { try fm.moveItem(at: step.from, to: step.temp) }
                 staged.append(step)
             } catch {
+                if let photo = step.photo { failedPhotos.insert(photo) }
                 result.failures.append("\(step.from.lastPathComponent): \(error.localizedDescription)")
             }
         }
         // Phase 2: move into final names.
         for step in staged {
+            if let owner = step.owner, failedPhotos.contains(owner) {
+                try? fm.moveItem(at: step.temp, to: step.from)  // the photo stayed put, so its edits do too
+                continue
+            }
             do {
                 guard !fm.fileExists(atPath: step.to.path) else {
                     throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: step.to.path])
@@ -183,6 +256,7 @@ public enum FileOperations {
             } catch {
                 // Put it back where it came from.
                 if step.copySidecar { try? fm.removeItem(at: step.temp) } else { try? fm.moveItem(at: step.temp, to: step.from) }
+                if let photo = step.photo { failedPhotos.insert(photo) }
                 result.failures.append("\(step.from.lastPathComponent) → \(step.to.lastPathComponent): \(error.localizedDescription)")
             }
         }
@@ -308,6 +382,7 @@ public struct RenamePlan: Sendable {
         // New names must not collide with files that aren't being renamed.
         let renamedPaths = Set(items.flatMap { item in
             item.group.members.map(\.path) + [item.group.sidecar.path]
+                + item.group.members.flatMap { member in CompanionFileType.existing(for: member).map(\.url.path) }
         }.map { $0.lowercased() })
         for item in items where !item.isUnchanged {
             let targets = item.group.members.map(\.pathExtension) + (item.group.hasSidecar ? ["xmp"] : [])
@@ -315,6 +390,15 @@ public struct RenamePlan: Sendable {
                 let path = item.group.folder.appendingPathComponent(item.newBaseName).appendingPathExtension(ext).path
                 if fm.fileExists(atPath: path), !renamedPaths.contains(path.lowercased()) {
                     problems.append("\(item.newBaseName).\(ext) already exists.")
+                }
+            }
+            for member in item.group.members {
+                let newPhoto = item.group.folder.appendingPathComponent(item.newBaseName).appendingPathExtension(member.pathExtension)
+                for companion in CompanionFileType.existing(for: member) {
+                    let target = companion.type.url(for: newPhoto)
+                    if fm.fileExists(atPath: target.path), !renamedPaths.contains(target.path.lowercased()) {
+                        problems.append("\(companion.type.editor) settings \(target.lastPathComponent) already exist.")
+                    }
                 }
             }
         }

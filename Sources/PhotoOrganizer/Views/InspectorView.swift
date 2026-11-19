@@ -209,7 +209,7 @@ private struct TagEditor: View {
         let typed = newKeywords.trimmingCharacters(in: .whitespaces).lowercased()
         guard !typed.isEmpty, !newKeywords.contains(",") else { return [] }
         let excluded = Set(existing.map { $0.lowercased() })
-        let candidates = Set(browser.library.keywords.paths + browser.loadedKeywords)
+        let candidates = Set(browser.dataFolder.keywords.paths + browser.loadedKeywords)
         return candidates
             .filter { !excluded.contains($0.lowercased()) }
             .filter { $0.lowercased().hasPrefix(typed) || Keyword.leaf($0).lowercased().hasPrefix(typed) }

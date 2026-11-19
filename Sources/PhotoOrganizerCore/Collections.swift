@@ -76,7 +76,7 @@ public struct SearchCriteria: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// A named set of photos, saved as a JSON file in the library folder.
+/// A named set of photos, saved as a JSON file in the data folder.
 ///
 /// - Manual collections list photos explicitly.
 /// - Smart collections are saved searches: every photo under `folders` that matches `criteria`.
@@ -132,7 +132,7 @@ public struct PhotoCollection: Codable, Identifiable, Hashable, Sendable {
 }
 
 /// Stores paths under the user's home folder as "~/…" so collection files keep working when the
-/// library is synced to another Mac with the same folder layout.
+/// data folder is synced to another Mac with the same folder layout.
 public enum PortablePath {
     public static var homeDirectory: URL {
         // In a sandboxed app NSHomeDirectory() points into the container; use the real home folder.

@@ -5,14 +5,44 @@ import SwiftUI
 struct SettingsView: View {
     var body: some View {
         TabView {
+            GeneralSettings()
+                .tabItem { Label("General", systemImage: "gearshape") }
             EditorsSettings()
                 .tabItem { Label("Editors", systemImage: "paintbrush") }
-            LibrarySettings()
-                .tabItem { Label("Library", systemImage: "books.vertical") }
+            DataFolderSettings()
+                .tabItem { Label("Data Folder", systemImage: "folder") }
             CacheSettings()
                 .tabItem { Label("Cache", systemImage: "internaldrive") }
         }
         .frame(width: 580, height: 440)
+    }
+}
+
+private struct GeneralSettings: View {
+    @Environment(DataFolderModel.self) private var dataFolder
+    @Environment(BrowserModel.self) private var browser
+
+    var body: some View {
+        @Bindable var browser = browser
+        let appearance = Binding(
+            get: { dataFolder.settings.appearance },
+            set: { value in dataFolder.updateSettings { $0.appearance = value } })
+        Form {
+            Section {
+                Picker("Appearance", selection: appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.displayName).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text("System follows the Light or Dark setting in System Settings → Appearance.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Culling") {
+                Toggle("Advance to the next photo after rating or flagging", isOn: $browser.autoAdvance)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -68,8 +98,8 @@ private struct EditorsSettings: View {
     }
 }
 
-private struct LibrarySettings: View {
-    @Environment(LibraryModel.self) private var library
+private struct DataFolderSettings: View {
+    @Environment(DataFolderModel.self) private var dataFolder
     @Environment(BrowserModel.self) private var browser
 
     var body: some View {
@@ -77,28 +107,25 @@ private struct LibrarySettings: View {
         Form {
             Section {
                 LabeledContent("Location") {
-                    Text(PortablePath.string(library.folder))
+                    Text(PortablePath.string(dataFolder.url))
                         .textSelection(.enabled)
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }
                 HStack {
-                    Button("Change…") { library.chooseFolderInteractively() }
-                    Button("Show in Finder") { library.revealInFinder() }
-                    if library.folder != LibraryModel.defaultFolder {
+                    Button("Change…") { dataFolder.chooseFolderInteractively() }
+                    Button("Show in Finder") { dataFolder.revealInFinder() }
+                    if dataFolder.url != DataFolderModel.defaultURL {
                         Spacer()
-                        Text("Default: ~/Pictures/Photo Organizer Library").font(.caption).foregroundStyle(.secondary)
+                        Text("Default: ~/Pictures/Photo Organizer").font(.caption).foregroundStyle(.secondary)
                     }
                 }
             } header: {
-                Text("Library Folder")
+                Text("Data Folder")
             } footer: {
-                Text("Collections (one JSON file each) and your keyword list (Keywords.txt, Lightroom/Bridge format) live here. Put it in a synced or backed-up folder to share it between Macs. Ratings, labels, keywords and IPTC fields are always stored in XMP sidecars next to the photos.")
+                Text("An ordinary folder of files, with no database or catalog: Settings.json (sidebar folders, editors and preferences), one JSON file per collection, and your keyword list (Keywords.txt, Lightroom/Bridge format). Put it in a synced folder to have the same setup on every Mac. Only the data folder's location, folder access permissions and the thumbnail cache stay on each Mac. Ratings, labels, keywords and IPTC fields are always stored in XMP sidecars next to the photos.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            Section("Culling") {
-                Toggle("Advance to the next photo after rating or flagging", isOn: $browser.autoAdvance)
             }
         }
         .formStyle(.grouped)

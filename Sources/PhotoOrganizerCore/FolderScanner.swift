@@ -34,7 +34,16 @@ public enum FolderScanner {
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
                 throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: folder.path])
             }
-            urls = enumerator.compactMap { $0 as? URL }
+            let hidden = CompanionFileType.folderNames
+            var found: [URL] = []
+            for case let url as URL in enumerator {
+                if hidden.contains(url.lastPathComponent) {
+                    enumerator.skipDescendants()
+                    continue
+                }
+                found.append(url)
+            }
+            urls = found
         } else {
             urls = try FileManager.default.contentsOfDirectory(
                 at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
@@ -60,7 +69,9 @@ public enum FolderScanner {
     public static func subfolders(of folder: URL) -> [URL] {
         let items = (try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
+        let hidden = CompanionFileType.folderNames
         return items.filter { url in
+            guard !hidden.contains(url.lastPathComponent) else { return false }  // e.g. NX Studio's NKSC_PARAM
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
             return values?.isDirectory == true && values?.isPackage != true
         }

@@ -3,48 +3,63 @@ import Observation
 import PhotoOrganizerCore
 
 /// The configured third-party editors and how files are handed off to them.
+/// The editor list lives in `Settings.json` in the data folder, so it syncs between Macs.
 @MainActor
 @Observable
 final class EditorSettings {
-    private enum Keys {
-        static let editors = "externalEditors"
-        static let defaultEditor = "defaultEditorID"
-    }
-
-    var editors: [ExternalEditor] = [] { didSet { save() } }
-    var defaultEditorID: UUID? { didSet { save() } }
+    let dataFolder: DataFolderModel
     var lastError: String?
 
-    init() {
-        let defaults = UserDefaults.standard
-        if let data = defaults.data(forKey: Keys.editors),
-           let saved = try? JSONDecoder().decode([ExternalEditor].self, from: data) {
-            editors = saved
-            defaultEditorID = defaults.string(forKey: Keys.defaultEditor).flatMap(UUID.init(uuidString:))
-        } else {
-            // First launch: pre-configure editors we can find.
-            editors = Self.discoverEditors()
-            defaultEditorID = editors.first { $0.fileExtensions.isEmpty }?.id
-        }
+    init(dataFolder: DataFolderModel) {
+        self.dataFolder = dataFolder
+    }
+
+    var editors: [ExternalEditor] {
+        get { dataFolder.settings.editors }
+        set { dataFolder.updateSettings { $0.editors = newValue } }
+    }
+
+    var defaultEditorID: UUID? {
+        get { dataFolder.settings.defaultEditorID }
+        set { dataFolder.updateSettings { $0.defaultEditorID = newValue } }
     }
 
     func editor(for url: URL) -> ExternalEditor? {
         preferredEditor(for: url, editors: editors, defaultID: defaultEditorID)
     }
 
+    /// Where the editor's app is on *this* Mac: its saved path, or else wherever Launch Services
+    /// finds its bundle identifier (settings may come from a Mac with a different install location).
+    func installedURL(of editor: ExternalEditor) -> URL? {
+        if FileManager.default.fileExists(atPath: editor.appURL.path) { return editor.appURL }
+        return editor.bundleIdentifier.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+    }
+
     /// Opens each file in its preferred editor (or `editor` if given), falling back to the system default app.
     func open(_ urls: [URL], with editor: ExternalEditor? = nil) {
         if let editor {
-            open(urls, withApplicationAt: editor.appURL)
+            launch(urls, in: editor)
             return
         }
-        var byApp: [URL: [URL]] = [:]
+        var byEditor: [UUID: (editor: ExternalEditor, files: [URL])] = [:]
         var systemDefault: [URL] = []
         for url in urls {
-            if let app = self.editor(for: url)?.appURL { byApp[app, default: []].append(url) } else { systemDefault.append(url) }
+            if let editor = self.editor(for: url) {
+                byEditor[editor.id, default: (editor, [])].files.append(url)
+            } else {
+                systemDefault.append(url)
+            }
         }
-        for (app, files) in byApp { open(files, withApplicationAt: app) }
+        for (editor, files) in byEditor.values { launch(files, in: editor) }
         for url in systemDefault { NSWorkspace.shared.open(url) }
+    }
+
+    private func launch(_ urls: [URL], in editor: ExternalEditor) {
+        guard let appURL = installedURL(of: editor) else {
+            lastError = "\(editor.name) isn't installed on this Mac (looked for \(editor.appURL.path)). Update it in Settings → Editors."
+            return
+        }
+        open(urls, withApplicationAt: appURL)
     }
 
     func open(_ urls: [URL], withApplicationAt appURL: URL) {
@@ -76,12 +91,6 @@ final class EditorSettings {
     func remove(_ id: UUID) {
         editors.removeAll { $0.id == id }
         if defaultEditorID == id { defaultEditorID = nil }
-    }
-
-    private func save() {
-        let defaults = UserDefaults.standard
-        if let data = try? JSONEncoder().encode(editors) { defaults.set(data, forKey: Keys.editors) }
-        defaults.set(defaultEditorID?.uuidString, forKey: Keys.defaultEditor)
     }
 
     /// Finds Photoshop and NX Studio in /Applications (they often live one folder down).
