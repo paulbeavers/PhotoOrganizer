@@ -31,6 +31,8 @@ public struct SharedSettings: Codable, Equatable, Sendable {
     public var includeSubfolders = false
     public var renameTemplate = "{date:yyyyMMdd}_{n:4}"
     public var appearance: AppAppearance = .system
+    /// Show files with the same name in one folder (a RAW+JPEG pair) as one stack in the grid.
+    public var stackSameName = true
 
     public init() {}
 
@@ -49,6 +51,7 @@ public struct SharedSettings: Codable, Equatable, Sendable {
         renameTemplate = try c.decodeIfPresent(String.self, forKey: .renameTemplate) ?? d.renameTemplate
         // An unknown value (e.g. from a newer version on another Mac) falls back to System.
         appearance = (try? c.decodeIfPresent(AppAppearance.self, forKey: .appearance)) ?? d.appearance
+        stackSameName = try c.decodeIfPresent(Bool.self, forKey: .stackSameName) ?? d.stackSameName
     }
 }
 

@@ -96,8 +96,8 @@ struct ReviewView: View {
 
             if let activeURL, let photo = browser.photo(for: activeURL) {
                 Text(photo.name).font(.headline).lineLimit(1)
-                if !isComparing, let index = browser.visiblePhotos.firstIndex(where: { $0.url == activeURL }) {
-                    Text("\(index + 1) of \(browser.visiblePhotos.count)")
+                if !isComparing, let index = browser.displayedPhotos.firstIndex(where: { $0.url == activeURL }) {
+                    Text("\(index + 1) of \(browser.displayedPhotos.count)")
                         .foregroundStyle(.secondary)
                 }
             }

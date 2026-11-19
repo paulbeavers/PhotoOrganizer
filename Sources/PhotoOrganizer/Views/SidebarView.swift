@@ -120,7 +120,7 @@ private struct CollectionRow: View {
             guard collection.kind == .manual else { return false }
             var files = urls
             if files.count == 1, browser.selection.contains(files[0]) { files = browser.selectedURLs }
-            browser.dataFolder.add(files, to: collection.id)
+            browser.dataFolder.add(browser.includingStacks(files), to: collection.id)
             return true
         } isTargeted: { isTargeted = $0 && collection.kind == .manual }
         .contextMenu {

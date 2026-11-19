@@ -65,7 +65,7 @@ struct PhotoCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("New Collection…") {
-                browser.namePrompt = NamePrompt(purpose: .newCollection(adding: browser.selectedURLs))
+                browser.namePrompt = NamePrompt(purpose: .newCollection(adding: browser.includingStacks(browser.selectedURLs)))
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("New Folder…") {
@@ -83,7 +83,7 @@ struct PhotoCommands: Commands {
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(!hasSelection)
             Divider()
-            Button("Rename…") { browser.renameRequest = FileRequest(urls: browser.selectedURLs) }
+            Button("Rename…") { browser.renameRequest = FileRequest(urls: browser.includingStacks(browser.selectedURLs)) }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 .disabled(!hasSelection)
             Button("Move To…") { browser.transferInteractively(browser.selectedURLs, move: true) }
@@ -92,7 +92,7 @@ struct PhotoCommands: Commands {
             Button("Copy To…") { browser.transferInteractively(browser.selectedURLs, move: false) }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(!hasSelection)
-            Button("Move to Trash…") { browser.trashRequest = FileRequest(urls: browser.selectedURLs) }
+            Button("Move to Trash…") { browser.trashRequest = FileRequest(urls: browser.includingStacks(browser.selectedURLs)) }
                 .keyboardShortcut(.delete, modifiers: .command)
                 .disabled(!hasSelection)
         }
@@ -104,6 +104,15 @@ struct PhotoCommands: Commands {
                 browser.includeSubfolders.toggle()
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
+            Toggle("Stack Files with the Same Name", isOn: Binding(
+                get: { browser.stacksEnabled }, set: { browser.stacksEnabled = $0 }))
+            Button("Expand All Stacks") { browser.expandAllStacks() }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(!browser.stacksEnabled)
+            Button("Collapse All Stacks") { browser.collapseAllStacks() }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                .disabled(!browser.stacksEnabled)
+            Divider()
             Button("Refresh") { browser.refresh() }
                 .keyboardShortcut("r")
             Divider()
@@ -128,7 +137,7 @@ struct PhotoCommands: Commands {
             Button("Select All Photos") { browser.selectAll() }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
             Button("Select Rejected") {
-                browser.selection = Set(browser.visiblePhotos.map(\.url).filter { browser.tags[$0]?.isRejected == true })
+                browser.selection = Set(browser.displayedPhotos.map(\.url).filter { browser.tags[$0]?.isRejected == true })
             }
             Button("Move Rejected to Trash…") {
                 let rejected = browser.photos.map(\.url).filter { browser.tags[$0]?.isRejected == true }

@@ -56,9 +56,11 @@ app. Both should finish with no errors or warnings.
 - **Never modify original image files.** All tag writes go to XMP sidecars via `TagStore.update`,
   which writes only the fields that changed and preserves everything else in the sidecar (Camera Raw
   settings, other apps' fields).
-- Sidecar naming follows the Adobe convention: `X.NEF` → `X.xmp`. Files that share a base name share
-  a sidecar. File operations work on groups (`FileOperations.groups`); when only part of a pair is
-  moved, renamed or trashed, the sidecar is *copied*, not moved.
+- **One sidecar per photo** (`Sidecar.url(for:)`): RAW → `X.xmp` (Adobe convention); everything
+  else → `X.JPG.xmp`. Never make files share tags again (that was a reported bug: labeling the
+  JPEG of a pair also labeled the RAW). A non-RAW photo still *reads* a legacy `X.xmp` when no RAW
+  shares the name (`Sidecar.legacyURL`). In file operations the shared `X.xmp` goes only with the
+  photos that use it (`Group.usesSharedSidecar`); per-file `X.JPG.xmp` is a `CompanionFileType`.
 - Other editors' per-photo settings files (`CompanionFileType`: NX Studio `NKSC_PARAM/<file>.nksc`,
   RawTherapee `<file>.pp3`, DxO `<file>.dop`) must travel with their photo in every file operation.
   Any new file operation must handle them too (see `FileOperations`). For safety, a settings file is
@@ -88,9 +90,18 @@ app. Both should finish with no errors or warnings.
   `modifiers.isEmpty`, because digit keys can carry extra flags.
 - Avoid ⌥⌘S and ⌃⌘S as shortcuts (the system sidebar toggle). `SidebarCommands()` and
   `InspectorCommands()` are installed in `PhotoOrganizerApp`.
+- Stacks (same folder + base name): `BrowserModel.gridItems` / `displayedPhotos` are what the grid,
+  navigation, selection ranges and review use; `visiblePhotos` is every matching file. Tags apply
+  to the photo shown (per-file sidecars); file operations must go through
+  `includingStacks(_:)` so a closed stack is never split.
 - `BrowserModel.visiblePhotos` is cached and recomputed in `didSet` of `photos`, `tags`,
   `criteria` and the sort settings. Assign `tags` in bulk (build a copy, then assign once), not
   key by key in a loop.
+- **Buttons on grid cells** (e.g. the stack arrow) must be added as an `.overlay` *after* the cell's
+  tap / double-tap / drag gestures in `PhotoGridView`, never inside `PhotoCell`. Inside, SwiftUI's
+  gesture arbitration intermittently gives the click to the cell (select / open in editor) and the
+  button "sometimes does nothing". Keep such buttons inside the cell's bounds: the cell's
+  `.contentShape(Rectangle())` clips hit-testing of anything sticking out.
 - Inspector text fields must commit to the photos they started editing (see `IPTCFieldEditor`).
   Focus is lost *after* the selection has already changed.
 

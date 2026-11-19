@@ -14,9 +14,12 @@ public struct CompanionFileType: Sendable, Hashable {
     public static let nxStudio = CompanionFileType(editor: "NX Studio", subfolder: "NKSC_PARAM", suffix: ".nksc")
     public static let rawTherapee = CompanionFileType(editor: "RawTherapee", subfolder: nil, suffix: ".pp3")
     public static let dxoPhotoLab = CompanionFileType(editor: "DxO PhotoLab", subfolder: nil, suffix: ".dop")
+    /// Per-file XMP sidecars: this app's for non-RAW photos (`DSC_1.JPG.xmp`, see `Sidecar`), and
+    /// darktable's / digiKam's for any photo.
+    public static let xmpSidecar = CompanionFileType(editor: "XMP sidecar", subfolder: nil, suffix: ".xmp")
 
     /// Every companion type the app keeps with photos. Add new editors here.
-    public static let all: [CompanionFileType] = [.nxStudio, .rawTherapee, .dxoPhotoLab]
+    public static let all: [CompanionFileType] = [.xmpSidecar, .nxStudio, .rawTherapee, .dxoPhotoLab]
 
     /// Where this type's file for `photo` lives (whether or not it exists).
     public func url(for photo: URL) -> URL {
@@ -58,14 +61,27 @@ public enum FileOperations {
         let baseName: String
         let members: [URL]
 
+        /// The shared `<base>.xmp`: the RAW file's sidecar (and, from before per-file sidecars, a
+        /// non-RAW photo's when no RAW file shares the name). Non-RAW photos' own `<file>.xmp`
+        /// sidecars are companion files.
         var sidecar: URL { folder.appendingPathComponent(baseName).appendingPathExtension("xmp") }
-        var hasSidecar: Bool { FileManager.default.fileExists(atPath: sidecar.path) }
+        var hasSidecar: Bool { usesSharedSidecar && FileManager.default.fileExists(atPath: sidecar.path) }
 
-        /// Photos in the same folder sharing this base name that are *not* part of the operation.
+        private var allWithBaseName: [URL] { FileOperations.photos(in: folder, baseName: baseName) }
+
+        /// Whether any member reads `<base>.xmp`: RAW members always; non-RAW ones only when no RAW
+        /// file has this base name. (Moving just the JPEG of a pair leaves the RAW's sidecar alone.)
+        var usesSharedSidecar: Bool {
+            members.contains(where: Sidecar.isRaw) || !allWithBaseName.contains(where: Sidecar.isRaw)
+        }
+
+        /// Photos outside the operation that also read `<base>.xmp` (so it must be copied, not moved).
         var remainingSiblings: [URL] {
             let memberPaths = Set(members.map(\.standardizedFileURL.path))
-            return FileOperations.photos(in: folder, baseName: baseName)
-                .filter { !memberPaths.contains($0.standardizedFileURL.path) }
+            let all = allWithBaseName
+            let others = all.filter { !memberPaths.contains($0.standardizedFileURL.path) }
+            let anyRaw = (members + others).contains(where: Sidecar.isRaw)
+            return others.filter { anyRaw ? Sidecar.isRaw($0) : true }
         }
     }
 

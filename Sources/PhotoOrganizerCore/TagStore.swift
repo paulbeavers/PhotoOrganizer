@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 
 public enum TagStoreError: Error, LocalizedError {
     case serializationFailed
@@ -11,14 +12,46 @@ public enum TagStoreError: Error, LocalizedError {
     }
 }
 
-/// Locates and reads XMP sidecar files.
+/// Locates and reads XMP sidecar files. Every photo has its own:
 ///
-/// Sidecars follow the Adobe convention: `IMG_1234.NEF` -> `IMG_1234.xmp` in the same folder.
-/// Note that, as in Lightroom/Camera Raw, files that share a base name (e.g. a RAW+JPEG pair)
-/// share one sidecar.
+/// - RAW files use the Adobe convention, `DSC_0001.NEF` → `DSC_0001.xmp`, which Camera Raw,
+///   Photoshop, Bridge and Lightroom read.
+/// - Everything else (JPEG, TIFF, PSD, HEIC…) uses the full file name, `DSC_0001.JPG` →
+///   `DSC_0001.JPG.xmp` (as darktable and digiKam do). Adobe apps never read a separate sidecar for
+///   these formats, and this way the JPEG of a RAW+JPEG pair doesn't share the RAW's tags.
+///
+/// Before v0.3.1 every file used `<base>.xmp`; a non-RAW photo still reads that (see `legacyURL`).
 public enum Sidecar {
+    public static func isRaw(_ url: URL) -> Bool {
+        UTType(filenameExtension: url.pathExtension)?.conforms(to: .rawImage) == true
+    }
+
+    /// Where this photo's tags are written.
     public static func url(for imageURL: URL) -> URL {
+        isRaw(imageURL) ? sharedURL(for: imageURL) : imageURL.appendingPathExtension("xmp")
+    }
+
+    /// `<folder>/<base name>.xmp`: a RAW file's sidecar.
+    public static func sharedURL(for imageURL: URL) -> URL {
         imageURL.deletingPathExtension().appendingPathExtension("xmp")
+    }
+
+    /// A non-RAW photo's `<base>.xmp` from before per-file sidecars, if it has one: only when no RAW
+    /// file shares the base name (otherwise that sidecar is the RAW's).
+    public static func legacyURL(for imageURL: URL) -> URL? {
+        guard !isRaw(imageURL) else { return nil }
+        let shared = sharedURL(for: imageURL)
+        guard FileManager.default.fileExists(atPath: shared.path) else { return nil }
+        let base = imageURL.deletingPathExtension().lastPathComponent
+        let rawSibling = FileOperations.photos(in: imageURL.deletingLastPathComponent(), baseName: base).contains(where: isRaw)
+        return rawSibling ? nil : shared
+    }
+
+    /// The sidecar to read tags from: the photo's own, else a legacy one.
+    public static func existingURL(for imageURL: URL) -> URL? {
+        let own = url(for: imageURL)
+        if FileManager.default.fileExists(atPath: own.path) { return own }
+        return legacyURL(for: imageURL)
     }
 
     public static func readMetadata(at sidecarURL: URL) -> CGImageMetadata? {
@@ -38,7 +71,7 @@ public struct TagStore: Sendable {
     public init() {}
 
     public func tags(for imageURL: URL) -> PhotoTags {
-        if let sidecar = Sidecar.readMetadata(at: Sidecar.url(for: imageURL)) {
+        if let url = Sidecar.existingURL(for: imageURL), let sidecar = Sidecar.readMetadata(at: url) {
             return XMPTags.read(from: sidecar)
         }
         return embeddedTags(for: imageURL) ?? .empty
@@ -52,7 +85,9 @@ public struct TagStore: Sendable {
         let current: PhotoTags
         let baseline: PhotoTags   // what the sidecar itself currently contains
 
-        if let existing = Sidecar.readMetadata(at: sidecarURL) {
+        if let existing = Sidecar.readMetadata(at: sidecarURL)
+            ?? Sidecar.legacyURL(for: imageURL).flatMap(Sidecar.readMetadata) {
+            // (A legacy `<base>.xmp` is copied whole into the photo's own new sidecar.)
             metadata = CGImageMetadataCreateMutableCopy(existing) ?? CGImageMetadataCreateMutable()
             current = XMPTags.read(from: existing)
             baseline = current

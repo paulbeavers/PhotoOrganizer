@@ -39,7 +39,7 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
             $0.keywords = ["Iceland", "waterfall", " iceland "]
         }
 
-        let sidecar = folder.appendingPathComponent("DSC_0001.xmp")
+        let sidecar = folder.appendingPathComponent("DSC_0001.jpg.xmp")  // non-RAW: per-file sidecar
         #expect(FileManager.default.fileExists(atPath: sidecar.path))
         #expect(store.tags(for: photo) == PhotoTags(rating: 4, label: .green, keywords: ["Iceland", "waterfall"]))
 
@@ -244,13 +244,28 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
         #expect(TagStore().tags(for: destination.appendingPathComponent("DSC_1.NEF")).rating == 4)
     }
 
-    @Test func movingHalfAPairCopiesSidecar() throws {
+    @Test func movingTheJPEGOfAPairLeavesTheRawSidecar() throws {
         let source = try makeTempFolder(), destination = try makeTempFolder()
         let pair = try makePair(in: source, "DSC_2")
-        _ = FileOperations.move([pair.jpg], to: destination)
+        try TagStore().update(pair.jpg) { $0.rating = 2 }
+        let result = FileOperations.move([pair.jpg], to: destination)
+        #expect(!result.hasFailures)
+        // The RAW keeps its sidecar; the JPEG's own sidecar goes with it; nothing is shared.
         #expect(FileManager.default.fileExists(atPath: source.appendingPathComponent("DSC_2.xmp").path))
-        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("DSC_2.xmp").path))
+        #expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("DSC_2.xmp").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("DSC_2.JPG.xmp").path))
         #expect(TagStore().tags(for: pair.raw).rating == 4)
+        #expect(TagStore().tags(for: destination.appendingPathComponent("DSC_2.JPG")).rating == 2)
+    }
+
+    @Test func movingABareLegacyJPEGTakesItsOldSidecar() throws {
+        let source = try makeTempFolder(), destination = try makeTempFolder()
+        let jpg = source.appendingPathComponent("OLD.jpg")
+        try writeJPEG(to: jpg)
+        try legacySidecar(rating: 5).write(to: source.appendingPathComponent("OLD.xmp"), atomically: true, encoding: .utf8)
+        _ = FileOperations.move([jpg], to: destination)
+        #expect(TagStore().tags(for: destination.appendingPathComponent("OLD.jpg")).rating == 5)
+        #expect(!FileManager.default.fileExists(atPath: source.appendingPathComponent("OLD.xmp").path))
     }
 
     @Test func copyAvoidsOverwriting() throws {
@@ -401,6 +416,7 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
         #expect(settings.autoAdvance == true)
         #expect(settings.renameTemplate == SharedSettings().renameTemplate)
         #expect(settings.appearance == .system)
+        #expect(settings.stackSameName, "stacking is on unless turned off")
     }
 
     @Test func appearanceRoundTripsAndToleratesUnknownValues() throws {
@@ -506,7 +522,7 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
         #expect(!exists(folder, "NKSC_PARAM/DSC_1.NEF.nksc"))
         #expect(!exists(folder, "DSC_1.NEF.pp3"))
         #expect(exists(folder, "DSC_1.JPG.pp3"), "the JPEG's own edits stay")
-        #expect(exists(folder, "DSC_1.xmp"), "the shared sidecar stays while the JPEG remains")
+        #expect(!exists(folder, "DSC_1.xmp"), "the RAW's sidecar goes with it: the JPEG has its own")
     }
 
     @Test func editorFoldersAreHiddenFromTheTree() throws {
@@ -515,5 +531,70 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("Selects"), withIntermediateDirectories: true)
         #expect(FolderScanner.subfolders(of: folder).map(\.lastPathComponent) == ["Selects"])
         #expect(try FolderScanner.photos(in: folder, recursive: true).count == 2)
+    }
+}
+
+
+/// A minimal sidecar as written before per-file sidecars (`<base>.xmp` for every file).
+private func legacySidecar(rating: Int, keyword: String = "legacy") -> String {
+    """
+    <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/"
+      xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" xmp:Rating="\(rating)" crs:Exposure2012="+0.5">
+    <dc:subject><rdf:Bag><rdf:li>\(keyword)</rdf:li></rdf:Bag></dc:subject>
+    </rdf:Description></rdf:RDF></x:xmpmeta>
+    """
+}
+
+@Suite struct PerFileSidecarTests {
+    let store = TagStore()
+
+    @Test func rawAndJPEGOfAPairHaveIndependentTags() throws {
+        // The reported bug: labeling the JPEG of a RAW+JPEG pair also labeled the RAW.
+        let folder = try makeTempFolder()
+        let jpg = folder.appendingPathComponent("DSC_0370.JPG"), raw = folder.appendingPathComponent("DSC_0370.NEF")
+        try writeJPEG(to: jpg)
+        try Data("raw".utf8).write(to: raw)
+
+        try store.update(jpg) { $0.label = .red }
+        #expect(store.tags(for: jpg).label == .red)
+        #expect(store.tags(for: raw).label == nil)
+
+        try store.update(raw) { $0.rating = 5 }
+        #expect(store.tags(for: raw) == PhotoTags(rating: 5))
+        #expect(store.tags(for: jpg) == PhotoTags(label: .red))
+
+        let files = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+        #expect(files == ["DSC_0370.JPG", "DSC_0370.JPG.xmp", "DSC_0370.NEF", "DSC_0370.xmp"])
+    }
+
+    @Test func rawSidecarKeepsTheAdobeName() {
+        #expect(Sidecar.url(for: URL(fileURLWithPath: "/p/DSC_1.NEF")).lastPathComponent == "DSC_1.xmp")
+        #expect(Sidecar.url(for: URL(fileURLWithPath: "/p/IMG_1.CR3")).lastPathComponent == "IMG_1.xmp")
+        #expect(Sidecar.url(for: URL(fileURLWithPath: "/p/DSC_1.JPG")).lastPathComponent == "DSC_1.JPG.xmp")
+        #expect(Sidecar.url(for: URL(fileURLWithPath: "/p/a.tif")).lastPathComponent == "a.tif.xmp")
+    }
+
+    @Test func legacySidecarIsReadAndCarriedIntoTheNewOne() throws {
+        let folder = try makeTempFolder()
+        let jpg = folder.appendingPathComponent("OLD.jpg")
+        try writeJPEG(to: jpg)
+        try legacySidecar(rating: 3).write(to: folder.appendingPathComponent("OLD.xmp"), atomically: true, encoding: .utf8)
+        #expect(store.tags(for: jpg) == PhotoTags(rating: 3, keywords: ["legacy"]))
+
+        try store.update(jpg) { $0.label = .green }
+        #expect(store.tags(for: jpg) == PhotoTags(rating: 3, label: .green, keywords: ["legacy"]))
+        let xml = try String(contentsOf: folder.appendingPathComponent("OLD.jpg.xmp"), encoding: .utf8)
+        #expect(xml.contains("Exposure2012"), "foreign content from the old sidecar is kept")
+    }
+
+    @Test func legacySidecarOfARawIsNotReadByItsJPEG() throws {
+        let folder = try makeTempFolder()
+        let jpg = folder.appendingPathComponent("DSC_9.JPG")
+        try writeJPEG(to: jpg)
+        try Data("raw".utf8).write(to: folder.appendingPathComponent("DSC_9.NEF"))
+        try legacySidecar(rating: 4).write(to: folder.appendingPathComponent("DSC_9.xmp"), atomically: true, encoding: .utf8)
+        #expect(store.tags(for: jpg) == .empty)
+        #expect(store.tags(for: folder.appendingPathComponent("DSC_9.NEF")).rating == 4)
     }
 }

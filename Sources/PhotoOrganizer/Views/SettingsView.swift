@@ -38,6 +38,16 @@ private struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                Toggle("Stack files with the same name", isOn: Binding(
+                    get: { browser.stacksEnabled }, set: { browser.stacksEnabled = $0 }))
+            } header: {
+                Text("Browsing")
+            } footer: {
+                Text("Shows DSC_0001.NEF and DSC_0001.JPG as one stack; click its arrow or press S to see both. Moving, copying, renaming or trashing a closed stack includes every file in it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Culling") {
                 Toggle("Advance to the next photo after rating or flagging", isOn: $browser.autoAdvance)
             }

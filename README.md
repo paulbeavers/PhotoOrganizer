@@ -9,6 +9,12 @@ database or catalog.
 ## Features
 
 **Browsing**
+- **Stacks.** Files with the same name in one folder (`DSC_0001.NEF` + `DSC_0001.JPG`) show as one
+  stack, RAW on top, with a badge such as "NEF+JPG". Click its arrow or press **S** to open it, and
+  use View → Expand / Collapse All Stacks (⌥⌘→ / ⌥⌘←). Ratings, labels, flags and keywords apply to
+  the photo you see (open the stack to tag the other file); moving, copying, renaming, trashing or
+  adding a closed stack to a collection includes every file in it. Turn stacking off in View or
+  Settings → General.
 - Folders pinned in the sidebar, with lazily expanded subfolder trees. Drag a folder from Finder
   onto the sidebar to pin it.
 - **Show subfolder contents** (⇧⌘D) flattens a whole tree into one grid.
@@ -58,8 +64,15 @@ database or catalog.
 
 ### Per photo: XMP sidecars
 
-Sidecars follow the Adobe convention (`DSC_0001.NEF` → `DSC_0001.xmp`), so Camera Raw, Photoshop,
-Bridge and Lightroom read the same data:
+Every photo gets its own sidecar:
+
+- **RAW files** use the Adobe convention, `DSC_0001.NEF` → `DSC_0001.xmp`, so Camera Raw,
+  Photoshop, Bridge and Lightroom read the same data.
+- **Other files** (JPEG, TIFF, PSD, HEIC…) use the full file name, `DSC_0001.JPG` →
+  `DSC_0001.JPG.xmp`, as darktable and digiKam do. Adobe apps never read a separate sidecar for
+  these formats, and this keeps the JPEG of a RAW+JPEG pair independent of the RAW.
+
+The properties used:
 
 | Data | XMP property |
 |---|---|
@@ -77,9 +90,10 @@ Rules for sidecars:
   settings, is preserved.
 - If a photo has no sidecar, tags embedded in the image are shown, and the first edit copies them
   into a new sidecar.
-- Files that share a base name (a RAW+JPEG pair) share one sidecar, as in Adobe's tools. If only part
-  of a pair is moved, renamed or trashed, the sidecar is copied rather than moved, so the file left
-  behind keeps its tags.
+- Each file of a RAW+JPEG pair has its own tags. Moving, renaming or trashing one file of a pair
+  takes only that file's sidecar.
+- Before v0.3.1 a JPEG used `<base>.xmp`. Such a sidecar is still read when no RAW file shares the
+  name, and its contents are carried into `<file>.xmp` on the next edit.
 
 ### Other editors' settings files
 

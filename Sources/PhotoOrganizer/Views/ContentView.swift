@@ -74,6 +74,9 @@ struct ContentView: View {
         .onChange(of: dataFolder.settings.appearance) {
             dataFolder.applyAppearance()
         }
+        .onChange(of: dataFolder.settings.stackSameName) {
+            browser.rebuildGrid()
+        }
         .sheet(item: $browser.namePrompt) { prompt in
             NamePromptSheet(prompt: prompt)
         }

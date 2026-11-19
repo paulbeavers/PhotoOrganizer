@@ -17,6 +17,26 @@ enum BrowseSource: Hashable {
     case collection(UUID)
 }
 
+/// Files in one folder that share a base name (a RAW+JPEG pair), shown as one stack in the grid.
+struct StackInfo: Hashable {
+    let key: String
+    /// Position in the stack; 0 is the top (the RAW file, if there is one).
+    let index: Int
+    let count: Int
+    let isExpanded: Bool
+    /// Upper-case extensions of the members, top first, e.g. ["NEF", "JPG"].
+    let extensions: [String]
+
+    var isTop: Bool { index == 0 }
+}
+
+/// One cell in the grid.
+struct GridEntry: Identifiable, Hashable {
+    let photo: PhotoFile
+    let stack: StackInfo?
+    var id: URL { photo.url }
+}
+
 /// A request for a name, shown as a small sheet.
 struct NamePrompt: Identifiable {
     enum Purpose {
@@ -97,6 +117,14 @@ final class BrowserModel {
     private(set) var tags: [URL: PhotoTags] = [:] { didSet { refilter() } }
     /// `photos` after filtering and sorting. Cached because many views read it.
     private(set) var visiblePhotos: [PhotoFile] = []
+    /// What the grid shows: `visiblePhotos` with same-name files grouped into stacks.
+    private(set) var gridItems: [GridEntry] = []
+    /// The photos in the grid, in order: collapsed stacks contribute only their top photo. Keyboard
+    /// navigation, selection ranges and review all walk this list.
+    private(set) var displayedPhotos: [PhotoFile] = []
+    /// Stacks the user opened (view state; not saved).
+    var expandedStacks: Set<String> = [] { didSet { rebuildGrid() } }
+    @ObservationIgnored private var stackMembers: [String: [URL]] = [:]
     private(set) var isLoading = false
     var errorMessage: String?
 
@@ -118,6 +146,15 @@ final class BrowserModel {
             reload()
         }
     }
+    /// Group same-name files into stacks (stored in Settings.json).
+    var stacksEnabled: Bool {
+        get { dataFolder.settings.stackSameName }
+        set {
+            dataFolder.updateSettings { $0.stackSameName = newValue }
+            rebuildGrid()
+        }
+    }
+
     /// After rating/flagging a single photo, move to the next one (culling). Stored in Settings.json.
     var autoAdvance: Bool {
         get { dataFolder.settings.autoAdvance }
@@ -175,6 +212,94 @@ final class BrowserModel {
     private func refilter() {
         let matching = photos.filter { criteria.matches(name: $0.name, tags: tags[$0.url] ?? .empty) }
         visiblePhotos = matching.sorted { sortAscending ? precedes($0, $1) : precedes($1, $0) }
+        rebuildGrid()
+    }
+
+    // MARK: - Stacks
+
+    static func stackKey(for url: URL) -> String {
+        url.deletingLastPathComponent().standardizedFileURL.path + "/" + url.deletingPathExtension().lastPathComponent.lowercased()
+    }
+
+    /// Groups `visiblePhotos` into stacks. A stack sits where its first member sorts; its members
+    /// are ordered RAW first, then by name.
+    func rebuildGrid() {
+        guard stacksEnabled else {
+            stackMembers = [:]
+            gridItems = visiblePhotos.map { GridEntry(photo: $0, stack: nil) }
+            displayedPhotos = visiblePhotos
+            return
+        }
+        var order: [String] = []
+        var groups: [String: [PhotoFile]] = [:]
+        for photo in visiblePhotos {
+            let key = Self.stackKey(for: photo.url)
+            if groups[key] == nil { order.append(key) }
+            groups[key, default: []].append(photo)
+        }
+        var items: [GridEntry] = []
+        var members: [String: [URL]] = [:]
+        var topOfHidden: [URL: URL] = [:]
+        for key in order {
+            let group = groups[key]!.sorted { a, b in
+                let rawA = Sidecar.isRaw(a.url), rawB = Sidecar.isRaw(b.url)
+                return rawA != rawB ? rawA : a.name.localizedStandardCompare(b.name) == .orderedAscending
+            }
+            guard group.count > 1 else {
+                items.append(GridEntry(photo: group[0], stack: nil))
+                continue
+            }
+            members[key] = group.map(\.url)
+            let expanded = expandedStacks.contains(key)
+            let extensions = group.map { $0.url.pathExtension.uppercased() }
+            for (index, photo) in group.enumerated() {
+                if expanded || index == 0 {
+                    items.append(GridEntry(photo: photo, stack: StackInfo(key: key, index: index, count: group.count,
+                                                                         isExpanded: expanded, extensions: extensions)))
+                } else {
+                    topOfHidden[photo.url] = group[0].url
+                }
+            }
+        }
+        stackMembers = members
+        gridItems = items
+        displayedPhotos = items.map(\.photo)
+
+        // A selected photo that just got folded into a collapsed stack: select the stack instead.
+        if !topOfHidden.isEmpty, !selection.isDisjoint(with: topOfHidden.keys) {
+            selection = Set(selection.map { topOfHidden[$0] ?? $0 })
+        }
+        if let focused, let top = topOfHidden[focused] { self.focused = top }
+    }
+
+    func toggleStack(_ key: String) {
+        if expandedStacks.contains(key) { expandedStacks.remove(key) } else { expandedStacks.insert(key) }
+    }
+
+    /// Opens or closes the stack the focused photo belongs to.
+    func toggleFocusedStack() {
+        guard let focused, stacksEnabled else { return }
+        let key = Self.stackKey(for: focused)
+        if stackMembers[key] != nil { toggleStack(key) }
+    }
+
+    func isInStack(_ url: URL) -> Bool { stackMembers[Self.stackKey(for: url)] != nil }
+
+    func expandAllStacks() { expandedStacks = Set(stackMembers.keys) }
+    func collapseAllStacks() { expandedStacks = [] }
+
+    /// For file operations (move, copy, rename, trash, collections): a collapsed stack's top photo
+    /// stands for the whole stack, so a RAW+JPEG pair is never split by accident.
+    func includingStacks(_ urls: [URL]) -> [URL] {
+        var seen = Set<URL>()
+        var result: [URL] = []
+        for url in urls {
+            let key = Self.stackKey(for: url)
+            let group = (stackMembers[key] != nil && !expandedStacks.contains(key) && stackMembers[key]?.first == url)
+                ? stackMembers[key]! : [url]
+            for member in group where seen.insert(member).inserted { result.append(member) }
+        }
+        return result
     }
 
     private func precedes(_ a: PhotoFile, _ b: PhotoFile) -> Bool {
@@ -194,7 +319,7 @@ final class BrowserModel {
 
     /// Selected photos in display order.
     var selectedURLs: [URL] {
-        visiblePhotos.map(\.url).filter(selection.contains)
+        displayedPhotos.map(\.url).filter(selection.contains)
     }
 
     /// The photo shown in the inspector preview and the loupe.
@@ -410,7 +535,7 @@ final class BrowserModel {
             if selection.contains(url) { selection.remove(url) } else { selection.insert(url) }
             anchor = url
         } else if modifiers.contains(.shift), let anchor {
-            let visible = visiblePhotos.map(\.url)
+            let visible = displayedPhotos.map(\.url)
             if let a = visible.firstIndex(of: anchor), let b = visible.firstIndex(of: url) {
                 selection = Set(visible[min(a, b)...max(a, b)])
             }
@@ -428,7 +553,7 @@ final class BrowserModel {
     }
 
     func moveSelection(by offset: Int, extend: Bool = false) {
-        let visible = visiblePhotos.map(\.url)
+        let visible = displayedPhotos.map(\.url)
         guard !visible.isEmpty else { return }
         let next = focused.flatMap { visible.firstIndex(of: $0) }
             .map { min(max($0 + offset, 0), visible.count - 1) } ?? 0
@@ -442,7 +567,7 @@ final class BrowserModel {
     }
 
     func selectAll() {
-        selection = Set(visiblePhotos.map(\.url))
+        selection = Set(displayedPhotos.map(\.url))
     }
 
     func clearSelection() {
@@ -454,8 +579,8 @@ final class BrowserModel {
     func startReview() {
         let selected = selectedURLs
         compareURLs = (2...4).contains(selected.count) ? selected : []
-        if selected.isEmpty, let first = visiblePhotos.first { select(first.url) }
-        guard !visiblePhotos.isEmpty else { return }
+        if selected.isEmpty, let first = displayedPhotos.first { select(first.url) }
+        guard !displayedPhotos.isEmpty else { return }
         isReviewing = true
     }
 
@@ -527,7 +652,7 @@ final class BrowserModel {
 
     private func updateTags(_ urls: [URL], advance: Bool = false, _ change: (inout PhotoTags) -> Void) {
         guard !urls.isEmpty else { return }
-        let visibleBefore = visiblePhotos.map(\.url)
+        let visibleBefore = displayedPhotos.map(\.url)
         let focusIndex = focused.flatMap { visibleBefore.firstIndex(of: $0) }
 
         var updated = tags
@@ -546,7 +671,7 @@ final class BrowserModel {
 
         // Culling: if the focused photo was filtered out by the change, keep the same position;
         // otherwise optionally advance to the next photo.
-        let visible = visiblePhotos.map(\.url)
+        let visible = displayedPhotos.map(\.url)
         if let focused, !visible.contains(focused), let focusIndex, !visible.isEmpty {
             select(visible[min(focusIndex, visible.count - 1)])
         } else if advance, autoAdvance, urls.count == 1, compareURLs.isEmpty {
@@ -611,15 +736,20 @@ final class BrowserModel {
 
     // MARK: - File operations
 
+    // Copy / move / trash take a collapsed stack whole (`includingStacks`).
+
     func copy(_ urls: [URL], to destination: URL) {
+        let urls = includingStacks(urls)
         runFileOperation("copy") { FileOperations.copy(urls, to: destination) }
     }
 
     func move(_ urls: [URL], to destination: URL) {
+        let urls = includingStacks(urls)
         runFileOperation("move", relocates: true) { FileOperations.move(urls, to: destination) }
     }
 
     func moveToTrash(_ urls: [URL]) {
+        let urls = includingStacks(urls)
         runFileOperation("move to Trash") { FileOperations.trash(urls) }
     }
 
@@ -659,8 +789,10 @@ final class BrowserModel {
         }
         var files = urls.filter { !directories.contains($0) }
         guard let folder, !files.isEmpty else { return !directories.isEmpty }
-        // Dragging one photo of a multi-selection drags the whole selection.
+        // Dragging one photo of a multi-selection drags the whole selection; collapsed stacks
+        // travel whole.
         if files.count == 1, selection.contains(files[0]) { files = selectedURLs }
+        files = includingStacks(files)
         if copy { self.copy(files, to: folder) } else { move(files, to: folder) }
         return true
     }
