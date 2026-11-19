@@ -57,6 +57,8 @@ final class DataFolderModel {
     }
 
     var collectionsFolder: URL { url.appendingPathComponent("Collections", isDirectory: true) }
+    /// Where imports go: `images/YYYY/yyyy-MM-dd/` (see `ImportLayout`).
+    var imagesURL: URL { url.appendingPathComponent(ImportLayout.rootFolderName, isDirectory: true) }
     var keywordsFile: URL { url.appendingPathComponent("Keywords.txt") }
     var settingsFile: URL { settingsStore.fileURL }
     private var store: CollectionStore { CollectionStore(folder: collectionsFolder) }

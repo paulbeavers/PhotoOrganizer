@@ -15,6 +15,8 @@ enum PhotoSortOrder: String, CaseIterable, Identifiable {
 enum BrowseSource: Hashable {
     case folder(URL)
     case collection(UUID)
+    /// The photos of the running or most recent import, as they land.
+    case lastImport
 }
 
 /// Files in one folder that share a base name (a RAW+JPEG pair), shown as one stack in the grid.
@@ -199,6 +201,7 @@ final class BrowserModel {
         switch source {
         case .folder(let url): FileManager.default.displayName(atPath: url.path)
         case .collection: currentCollection?.name ?? "Collection"
+        case .lastImport: "Last Import"
         case nil: "Photo Organizer"
         }
     }
@@ -426,6 +429,9 @@ final class BrowserModel {
                         .filter { seen.insert($0.url).inserted }
                 }
             }
+        case .lastImport:
+            let urls = lastImportURLs
+            return { FolderScanner.photoFiles(urls) }
         }
     }
 
@@ -437,6 +443,8 @@ final class BrowserModel {
         case .folder(let url):
             paths = [url]
             recursive = includeSubfolders
+        case .lastImport:
+            return  // updated by the import as files land
         case .collection:
             guard let collection = currentCollection else { return }
             switch collection.kind {
@@ -461,11 +469,55 @@ final class BrowserModel {
         reload()
     }
 
+    // MARK: - Last Import
+
+    /// Files of the running or most recent import, in import order (in memory only).
+    private(set) var lastImportURLs: [URL] = []
+    @ObservationIgnored private var lastImportReloadPending = false
+
+    /// Shows "Last Import", empty, as an import starts; photos appear as they're copied.
+    func beginLastImport() {
+        lastImportURLs = []
+        if source == .lastImport {
+            photos = []
+            tags = [:]
+            selection = []
+            reload()
+        } else {
+            open(.lastImport)
+        }
+    }
+
+    func appendToLastImport(_ url: URL) {
+        lastImportURLs.append(url)
+        // Refresh the grid at most a couple of times a second while copying.
+        guard source == .lastImport, !lastImportReloadPending else { return }
+        lastImportReloadPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.lastImportReloadPending = false
+                if self?.source == .lastImport { self?.reload() }
+            }
+        }
+    }
+
+    func finishLastImport() {
+        refreshSidebar()
+        if source == .lastImport { reload() }
+    }
+
     // MARK: - Sidebar folders
 
     /// Rebuilds the sidebar from `Settings.json`. Called at launch and whenever the settings change
     /// (including changes synced from another Mac).
     func syncSidebarWithSettings(force: Bool = false) {
+        // One entry per folder: macOS paths ignore case, so "…/Images" and "…/images" are the same.
+        let saved = dataFolder.settings.sidebarFolders
+        var seen = Set<String>()
+        let unique = saved.filter { seen.insert($0.lowercased()).inserted }
+        if unique.count != saved.count {
+            dataFolder.updateSettings { $0.sidebarFolders = unique }
+        }
         let urls = dataFolder.settings.sidebarFolderURLs
         guard force || urls != rootNodes.map(\.url) else { return }
         rootNodes = urls.map { FolderNode(url: $0, isAccessible: FolderAccess.restoreAccess(to: $0)) }
@@ -488,7 +540,9 @@ final class BrowserModel {
         dataFolder.updateSettings { settings in
             for url in urls {
                 let path = PortablePath.string(url)
-                if !settings.sidebarFolders.contains(path) { settings.sidebarFolders.append(path) }
+                if !settings.sidebarFolders.contains(where: { $0.caseInsensitiveCompare(path) == .orderedSame }) {
+                    settings.sidebarFolders.append(path)
+                }
             }
         }
         syncSidebarWithSettings(force: true)
@@ -500,7 +554,12 @@ final class BrowserModel {
         syncSidebarWithSettings()
     }
 
-    func isRoot(_ url: URL) -> Bool { rootNodes.contains { $0.url == url } }
+    /// Compares paths, not URLs, and ignores case like macOS does (`…/images`, `…/images/` and
+    /// `…/Images` are the same folder).
+    func isRoot(_ url: URL) -> Bool {
+        let path = url.standardizedFileURL.path
+        return rootNodes.contains { $0.url.standardizedFileURL.path.caseInsensitiveCompare(path) == .orderedSame }
+    }
 
     func isAccessible(_ url: URL) -> Bool {
         rootNodes.first { $0.url == url }?.isAccessible ?? true

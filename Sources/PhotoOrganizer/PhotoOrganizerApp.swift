@@ -18,6 +18,7 @@ struct PhotoOrganizerApp: App {
     @State private var dataFolder: DataFolderModel
     @State private var browser: BrowserModel
     @State private var editors: EditorSettings
+    @State private var importer: ImportModel
 
     init() {
         // Used by scripts/build-app.sh to produce the .icns (renders and exits before any UI or data).
@@ -28,9 +29,11 @@ struct PhotoOrganizerApp: App {
         }
         let dataFolder = DataFolderModel()
         dataFolder.applyAppearance()  // before the first window appears
+        let browser = BrowserModel(dataFolder: dataFolder)
         _dataFolder = State(initialValue: dataFolder)
-        _browser = State(initialValue: BrowserModel(dataFolder: dataFolder))
+        _browser = State(initialValue: browser)
         _editors = State(initialValue: EditorSettings(dataFolder: dataFolder))
+        _importer = State(initialValue: ImportModel(dataFolder: dataFolder, browser: browser))
     }
 
     var body: some Scene {
@@ -39,12 +42,13 @@ struct PhotoOrganizerApp: App {
                 .environment(dataFolder)
                 .environment(browser)
                 .environment(editors)
+                .environment(importer)
                 .frame(minWidth: 960, minHeight: 600)
         }
         .commands {
             SidebarCommands()
             InspectorCommands()
-            PhotoCommands(browser: browser, editors: editors)
+            PhotoCommands(browser: browser, editors: editors, importer: importer)
         }
 
         Settings {
@@ -59,11 +63,16 @@ struct PhotoOrganizerApp: App {
 struct PhotoCommands: Commands {
     let browser: BrowserModel
     let editors: EditorSettings
+    let importer: ImportModel
 
     private var hasSelection: Bool { !browser.selection.isEmpty }
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
+            Button("Import Photos…") { importer.present() }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(importer.isImporting)
+            Divider()
             Button("New Collection…") {
                 browser.namePrompt = NamePrompt(purpose: .newCollection(adding: browser.includingStacks(browser.selectedURLs)))
             }

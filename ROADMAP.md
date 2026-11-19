@@ -4,9 +4,10 @@ Goal: make it fast to **get a shoot off the card, cull it, and get to the good i
 real purpose of the app. Ideas from a planning discussion on 2026-11-18; nothing here is built
 yet. ✅ marks what the app already does.
 
-## 1. Getting photos in (import from a card)
+## 1. Getting photos in (import from a card) ✅ built 2026-11-19
 
-The biggest gap: today files have to be copied with Finder first.
+Import from cards, cameras and folders into `<data folder>/images/YYYY/yyyy-MM-dd/` (no spaces in
+names), with everything below. Not yet tested on a real card in the sandboxed build.
 
 - **Import from card / camera:** detect a mounted card (`DCIM`), show its thumbnails, copy into
   the folder structure. Already-imported photos are greyed out (match by name + size + capture

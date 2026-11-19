@@ -10,5 +10,16 @@
     <key>com.apple.security.files.bookmarks.app-scope</key><true/>
     <!-- ~/Pictures: the default sidebar folder and default data folder location. -->
     <key>com.apple.security.assets.pictures.read-write</key><true/>
+    <!-- Read-only access to mounted volumes, so memory cards and cameras can be imported from
+         without a permission prompt for every card. (A temporary-exception entitlement: fine for
+         Developer ID distribution, not allowed on the Mac App Store.) Writing elsewhere, e.g. a
+         backup drive, still needs the user's choice in an open panel. -->
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-only</key>
+    <array><string>/Volumes/</string></array>
+    <!-- Read-only access to the home folder, for the import window's folder tree (browse and
+         import from any folder, like Finder). macOS still asks once before Desktop, Documents and
+         Downloads are read. Writing stays limited to the data folder and folders the user chose. -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+    <array><string>/</string></array>
 </dict>
 </plist>

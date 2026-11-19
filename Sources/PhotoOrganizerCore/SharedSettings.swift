@@ -33,6 +33,8 @@ public struct SharedSettings: Codable, Equatable, Sendable {
     public var appearance: AppAppearance = .system
     /// Show files with the same name in one folder (a RAW+JPEG pair) as one stack in the grid.
     public var stackSameName = true
+    /// Options for importing from cards and folders.
+    public var importOptions = ImportSettings()
 
     public init() {}
 
@@ -52,6 +54,7 @@ public struct SharedSettings: Codable, Equatable, Sendable {
         // An unknown value (e.g. from a newer version on another Mac) falls back to System.
         appearance = (try? c.decodeIfPresent(AppAppearance.self, forKey: .appearance)) ?? d.appearance
         stackSameName = try c.decodeIfPresent(Bool.self, forKey: .stackSameName) ?? d.stackSameName
+        importOptions = (try? c.decodeIfPresent(ImportSettings.self, forKey: .importOptions)) ?? d.importOptions
     }
 }
 

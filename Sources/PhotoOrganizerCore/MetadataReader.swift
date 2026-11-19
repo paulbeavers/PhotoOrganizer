@@ -92,6 +92,17 @@ public enum MetadataReader {
         return raw.flatMap(parseExifDate)
     }
 
+    /// Capture date and camera model from one read of the file (used when scanning a card).
+    public static func importInfo(of url: URL) -> (date: Date?, camera: String?) {
+        let props = properties(of: url)
+        let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+        let tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+        let raw = (exif[kCGImagePropertyExifDateTimeOriginal as String]
+            ?? exif[kCGImagePropertyExifDateTimeDigitized as String]
+            ?? tiff[kCGImagePropertyTIFFDateTime as String]) as? String
+        return (raw.flatMap(parseExifDate), tiff[kCGImagePropertyTIFFModel as String] as? String)
+    }
+
     public static func cameraModel(of url: URL) -> String? {
         let tiff = properties(of: url)[kCGImagePropertyTIFFDictionary as String] as? [String: Any]
         return tiff?[kCGImagePropertyTIFFModel as String] as? String

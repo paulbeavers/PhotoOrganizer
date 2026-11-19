@@ -26,7 +26,8 @@ public enum FolderScanner {
 
     /// Image files (JPEG, HEIC, TIFF, PSD, PNG, camera RAW, ...) inside `folder`, sorted by name.
     /// With `recursive`, includes every subfolder (skipping hidden folders and packages).
-    public static func photos(in folder: URL, recursive: Bool = false) throws -> [PhotoFile] {
+    public static func photos(in folder: URL, recursive: Bool = false,
+                              isCancelled: () -> Bool = { false }) throws -> [PhotoFile] {
         let urls: [URL]
         if recursive {
             guard let enumerator = FileManager.default.enumerator(
@@ -37,6 +38,7 @@ public enum FolderScanner {
             let hidden = CompanionFileType.folderNames
             var found: [URL] = []
             for case let url as URL in enumerator {
+                if isCancelled() { return [] }
                 if hidden.contains(url.lastPathComponent) {
                     enumerator.skipDescendants()
                     continue

@@ -8,6 +8,22 @@ database or catalog.
 
 ## Features
 
+**Importing** (File → Import Photos…, ⇧⌘I)
+- **From a memory card, camera or any folder.** The import window shows connected cards and
+  drives, and your home folder as a Finder-style tree: click a folder to import from it (with its
+  subfolders, unless you turn that off). The window opens by itself when a card is inserted. Photos are listed by capture day, and ones imported before are greyed out and
+  unchecked, even if they were imported on another Mac that shares the data folder.
+- **Organized automatically** into the data folder: `images/YYYY/yyyy-MM-dd/`, by capture date
+  (for example `images/2026/2026-11-19/`). File names never contain spaces.
+- **Keep the camera's names or rename** with a template (`{date:yyyyMMdd}_{n:4}`…); RAW+JPEG
+  pairs keep matching names.
+- **RAW + JPEG, RAW only or JPEG only.**
+- **Creator, copyright and keywords** added to every photo's sidecar as it arrives.
+- **Verified copies:** every copy is re-read from disk and compared with the original by
+  checksum. An optional **backup copy** goes to a second folder or drive in the same layout.
+- **Cull while it copies:** the grid switches to *Last Import* and fills up as files land; progress
+  and Cancel are in the sidebar. The card is ejected when the import finishes.
+
 **Browsing**
 - **Stacks.** Files with the same name in one folder (`DSC_0001.NEF` + `DSC_0001.JPG`) show as one
   stack, RAW on top, with a badge such as "NEF+JPG". Click its arrow or press **S** to open it, and
@@ -119,9 +135,11 @@ Dropbox, a NAS) and every Mac gets the same sidebar, editors, preferences, colle
 keywords.
 
 ```
-Settings.json             sidebar folders, external editors (+ per-extension rules), appearance, preferences
+images/YYYY/yyyy-MM-dd/   imported photos (and their sidecars), by capture date
+Settings.json             sidebar folders, external editors, appearance, import options, preferences
 Collections/<Name>.json   one file per collection
 Keywords.txt              keyword list in the tab-indented Lightroom/Bridge import/export format
+ImportHistory.json        which shots were imported, so cards aren't imported twice
 ```
 
 Paths under your home folder are stored as `~/…`, so they work on another Mac with a different
@@ -179,8 +197,9 @@ bookmarks to it.
 
 The scripts and the site are modelled on `../mactile` (MacLucent) and `../shoji`.
 
-**Sandbox notes.** The sandboxed app can only access `~/Pictures` and folders you choose in an open
-panel or drag in. Those folders are remembered with security-scoped bookmarks. The sandboxed app
+**Sandbox notes.** The sandboxed app can write only to `~/Pictures` (the default data folder) and
+folders you choose in an open panel or drag in. For importing it may *read* mounted volumes (cards,
+cameras) and the home folder; macOS still asks before Desktop, Documents and Downloads are read. Those folders are remembered with security-scoped bookmarks. The sandboxed app
 keeps its preferences in its own container, so the first sandboxed launch starts with a fresh
 sidebar and editor list. Entitlements are in `Resources/PhotoOrganizer.entitlements`.
 

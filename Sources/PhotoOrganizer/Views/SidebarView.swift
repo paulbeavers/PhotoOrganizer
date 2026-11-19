@@ -5,6 +5,11 @@ import SwiftUI
 struct SidebarView: View {
     @Environment(BrowserModel.self) private var browser
     @Environment(DataFolderModel.self) private var dataFolder
+    @Environment(ImportModel.self) private var importer
+
+    private var hasLastImport: Bool {
+        importer.isImporting || !browser.lastImportURLs.isEmpty || importer.lastSummary != nil
+    }
 
     var body: some View {
         let selection = Binding<BrowseSource?>(
@@ -26,11 +31,16 @@ struct SidebarView: View {
                 }
             }
             Section("Collections") {
+                // The running or most recent import, first among the collections.
+                if hasLastImport {
+                    LastImportRow()
+                        .tag(BrowseSource.lastImport)
+                }
                 ForEach(dataFolder.collections) { collection in
                     CollectionRow(collection: collection)
                         .tag(BrowseSource.collection(collection.id))
                 }
-                if dataFolder.collections.isEmpty {
+                if dataFolder.collections.isEmpty && !hasLastImport {
                     Text("Use “Add to Collection” on photos, or save a search.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -45,6 +55,8 @@ struct SidebarView: View {
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Menu {
+                    Button("Import Photos…") { importer.present() }
+                    Divider()
                     Button("Add Folder to Sidebar…") { browser.addRootFoldersInteractively() }
                     Button("New Collection…") {
                         browser.namePrompt = NamePrompt(purpose: .newCollection(adding: []))
@@ -58,6 +70,43 @@ struct SidebarView: View {
             }
             .padding(10)
         }
+    }
+}
+
+/// "Last Import" in the sidebar, with live progress while copying.
+private struct LastImportRow: View {
+    @Environment(ImportModel.self) private var importer
+    @Environment(BrowserModel.self) private var browser
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Label("Last Import", systemImage: "clock.arrow.circlepath")
+                Spacer()
+                if importer.isImporting {
+                    Button {
+                        importer.cancelImport()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Stop importing (files already copied stay)")
+                } else {
+                    Text("\(browser.lastImportURLs.count)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if importer.isImporting {
+                let p = importer.progress
+                ProgressView(value: Double(p.bytesDone), total: Double(max(p.bytesTotal, 1)))
+                    .controlSize(.small)
+                Text("\(p.filesDone) of \(p.filesTotal) · \(p.currentName)")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            } else if let summary = importer.lastSummary {
+                Text(summary).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

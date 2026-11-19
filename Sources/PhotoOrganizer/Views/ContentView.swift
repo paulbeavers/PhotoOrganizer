@@ -5,7 +5,10 @@ struct ContentView: View {
     @Environment(BrowserModel.self) private var browser
     @Environment(EditorSettings.self) private var editors
     @Environment(DataFolderModel.self) private var dataFolder
+    @Environment(ImportModel.self) private var importer
     @State private var showInspector = true
+    /// The main window's size; the import sheet fills most of it.
+    @State private var windowSize = CGSize(width: 1200, height: 800)
 
     var body: some View {
         @Bindable var browser = browser
@@ -82,6 +85,18 @@ struct ContentView: View {
         }
         .sheet(item: $browser.renameRequest) { request in
             BatchRenameSheet(urls: request.urls)
+        }
+        .sheet(isPresented: Binding(get: { importer.isPresented }, set: { importer.isPresented = $0 })) {
+            // As large as the main window allows (a sheet can't be bigger than its window), so the
+            // photo grid shows as many thumbnails as possible.
+            ImportView()
+                .frame(width: max(900, windowSize.width - 60), height: max(560, windowSize.height - 60))
+        }
+        .onGeometryChange(for: CGSize.self, of: { $0.size }) { windowSize = $0 }
+        .alert("Import", isPresented: errorBinding(\.errorMessage, on: importer)) {
+            Button("OK") { importer.errorMessage = nil }
+        } message: {
+            Text(importer.errorMessage ?? "")
         }
         .confirmationDialog(trashTitle, isPresented: Binding(
             get: { browser.trashRequest != nil },

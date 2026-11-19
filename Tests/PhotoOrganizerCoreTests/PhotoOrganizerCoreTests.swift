@@ -327,7 +327,7 @@ private func writeJPEG(to url: URL, embedded: CGImageMetadata? = nil) throws {
         collection.add([PortablePath.homeDirectory.appendingPathComponent("Pictures/a.NEF")])
         try store.save(collection)
         #expect(store.loadAll() == [collection])
-        let json = try String(contentsOf: folder.appendingPathComponent("Best of 2026.json"), encoding: .utf8)
+        let json = try String(contentsOf: folder.appendingPathComponent("Best_of_2026.json"), encoding: .utf8)  // never spaces in file names
         #expect(json.contains("\"~/Pictures/a.NEF\""))
 
         collection.name = "Portfolio"
@@ -597,4 +597,172 @@ private func legacySidecar(rating: Int, keyword: String = "legacy") -> String {
         #expect(store.tags(for: jpg) == .empty)
         #expect(store.tags(for: folder.appendingPathComponent("DSC_9.NEF")).rating == 4)
     }
+}
+
+@Suite struct ImportTests {
+    /// A date in local time, like a camera clock.
+    private func date(_ y: Int, _ m: Int, _ d: Int, _ h: Int = 12, _ min: Int = 0, _ s: Int = 0) -> Date {
+        Calendar.current.date(from: DateComponents(year: y, month: m, day: d, hour: h, minute: min, second: s))!
+    }
+
+    private func candidate(_ url: URL, _ when: Date, camera: String? = "NIKON Z 8") throws -> ImportCandidate {
+        let size = (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        return ImportCandidate(url: url, size: size, captureDate: when, camera: camera)
+    }
+
+    /// A card-like folder: DCIM/100NZ_8/DSC_0001.NEF + .JPG (Jan 5), DSC_0002.JPG (Nov 19).
+    private func makeCard() throws -> (root: URL, candidates: [ImportCandidate]) {
+        let root = try makeTempFolder()
+        let dcim = root.appendingPathComponent("DCIM/100NZ_8")
+        try FileManager.default.createDirectory(at: dcim, withIntermediateDirectories: true)
+        let raw = dcim.appendingPathComponent("DSC_0001.NEF"), jpg = dcim.appendingPathComponent("DSC_0001.JPG")
+        let jpg2 = dcim.appendingPathComponent("DSC_0002.JPG")
+        try Data(repeating: 7, count: 300_000).write(to: raw)
+        try writeJPEG(to: jpg)
+        try writeJPEG(to: jpg2)
+        return (root, [try candidate(raw, date(2026, 1, 5, 9, 30)), try candidate(jpg, date(2026, 1, 5, 9, 30)),
+                       try candidate(jpg2, date(2026, 11, 19, 14, 2, 7))])
+    }
+
+    @Test func layoutIsYearThenZeroPaddedDay() {
+        #expect(ImportLayout.relativeFolder(for: date(2026, 1, 5)) == "2026/2026-01-05")
+        #expect(ImportLayout.relativeFolder(for: date(2026, 11, 19)) == "2026/2026-11-19")
+        #expect(ImportLayout.relativeFolder(for: date(2027, 3, 9, 23, 59)) == "2027/2027-03-09")
+        #expect(ImportLayout.rootFolderName == "images")
+    }
+
+    @Test func namesNeverContainSpaces() {
+        #expect(ImportLayout.noSpaces("My  Trip\tday 1") == "My_Trip_day_1")
+        #expect(RenamePlan.sanitize(" Lake Day / 2 ") == "Lake_Day_-_2")
+    }
+
+    @Test func planKeepsPairsTogetherAndFiltersTypes() throws {
+        let card = try makeCard()
+        var settings = ImportSettings()
+        let all = ImportPlan(candidates: card.candidates, settings: settings)
+        #expect(all.groups.map(\.baseName) == ["DSC_0001", "DSC_0002"])
+        #expect(all.groups.map(\.folder) == ["2026/2026-01-05", "2026/2026-11-19"])
+        #expect(all.groups[0].members.count == 2)
+
+        settings.fileTypes = .rawOnly
+        #expect(ImportPlan(candidates: card.candidates, settings: settings).groups.flatMap(\.members).map(\.name) == ["DSC_0001.NEF"])
+        settings.fileTypes = .nonRawOnly
+        #expect(ImportPlan(candidates: card.candidates, settings: settings).fileCount == 2)
+
+        settings.fileTypes = .all
+        settings.renameFiles = true
+        settings.nameTemplate = "{date:yyyyMMdd} Lake {n:3}"
+        let renamed = ImportPlan(candidates: card.candidates, settings: settings)
+        #expect(renamed.groups.map(\.baseName) == ["20260105_Lake_001", "20261119_Lake_002"], "spaces become _")
+    }
+
+    @Test func importCopiesVerifiesBacksUpAndTags() throws {
+        let card = try makeCard()
+        let data = try makeTempFolder(), backup = try makeTempFolder()
+        let images = data.appendingPathComponent("images")
+        // An already-rated RAW from a folder import: its sidecar and NX Studio edits come along.
+        try TagStore().update(card.candidates[0].url) { $0.rating = 4 }
+        let nksc = card.candidates[0].url.deletingLastPathComponent().appendingPathComponent("NKSC_PARAM")
+        try FileManager.default.createDirectory(at: nksc, withIntermediateDirectories: true)
+        try Data("edits".utf8).write(to: nksc.appendingPathComponent("DSC_0001.NEF.nksc"))
+
+        var settings = ImportSettings()
+        settings.creator = "Paul"
+        settings.copyright = "© 2026 Paul"
+        settings.keywords = "Lake, Places > Texas"
+        let plan = ImportPlan(candidates: card.candidates, settings: settings)
+        let result = Importer.run(plan, options: .init(imagesRoot: images, backupRoot: backup, settings: settings))
+        #expect(result.failures.isEmpty)
+        #expect(result.imported.map { $0.path.replacingOccurrences(of: images.path + "/", with: "") }
+                == ["2026/2026-01-05/DSC_0001.NEF", "2026/2026-01-05/DSC_0001.JPG", "2026/2026-11-19/DSC_0002.JPG"])
+
+        let day = images.appendingPathComponent("2026/2026-01-05")
+        for name in ["DSC_0001.NEF", "DSC_0001.JPG", "DSC_0001.xmp", "DSC_0001.JPG.xmp", "NKSC_PARAM/DSC_0001.NEF.nksc"] {
+            #expect(FileManager.default.fileExists(atPath: day.appendingPathComponent(name).path), "\(name) imported")
+            #expect(FileManager.default.fileExists(atPath: backup.appendingPathComponent("2026/2026-01-05/\(name)").path), "\(name) backed up")
+        }
+        #expect(try Data(contentsOf: day.appendingPathComponent("DSC_0001.NEF")) == Data(contentsOf: card.candidates[0].url))
+
+        let rawTags = TagStore().tags(for: day.appendingPathComponent("DSC_0001.NEF"))
+        #expect(rawTags.rating == 4, "existing tags travel with the photo")
+        #expect(rawTags[.creator] == "Paul" && rawTags[.copyright] == "© 2026 Paul")
+        #expect(rawTags.keywords == ["Lake", "Places|Texas"])
+        #expect(TagStore().tags(for: backup.appendingPathComponent("2026/2026-11-19/DSC_0002.JPG")).keywords == ["Lake", "Places|Texas"])
+
+        #expect(result.history.count == 3)
+        #expect(result.history[card.candidates[2].historyKey] == PortablePath.string(images.appendingPathComponent("2026/2026-11-19/DSC_0002.JPG")))
+    }
+
+    @Test func secondImportOfSameNamesDoesNotOverwrite() throws {
+        let card = try makeCard()
+        let images = try makeTempFolder().appendingPathComponent("images")
+        let plan = ImportPlan(candidates: card.candidates, settings: ImportSettings())
+        _ = Importer.run(plan, options: .init(imagesRoot: images, backupRoot: nil, settings: ImportSettings()))
+        let again = Importer.run(plan, options: .init(imagesRoot: images, backupRoot: nil, settings: ImportSettings()))
+        #expect(again.failures.isEmpty)
+        #expect(again.imported.map(\.lastPathComponent) == ["DSC_0001-2.NEF", "DSC_0001-2.JPG", "DSC_0002-2.JPG"])
+    }
+
+    @Test func verificationCatchesACorruptCopy() throws {
+        let folder = try makeTempFolder()
+        let source = folder.appendingPathComponent("a.NEF"), target = folder.appendingPathComponent("b.NEF")
+        try Data(repeating: 1, count: 10_000).write(to: source)
+        try Importer.copyFile(from: source, to: target, verify: true)
+        #expect(try Importer.sha256(of: target, bypassingCache: true) == Importer.sha256(of: source, bypassingCache: false))
+        // Simulate corruption on disk: the digest of the copy no longer matches the original.
+        try Data(repeating: 2, count: 10_000).write(to: target)
+        #expect(try Importer.sha256(of: target, bypassingCache: true) != Importer.sha256(of: source, bypassingCache: false))
+    }
+
+    @Test func cancellingStopsBetweenFiles() throws {
+        let card = try makeCard()
+        let images = try makeTempFolder().appendingPathComponent("images")
+        let plan = ImportPlan(candidates: card.candidates, settings: ImportSettings())
+        let counter = Counter()
+        let result = Importer.run(plan, options: .init(imagesRoot: images, backupRoot: nil, settings: ImportSettings()),
+                                  isCancelled: { counter.value >= 1 }, onImported: { _, _ in counter.increment() })
+        #expect(result.wasCancelled)
+        #expect(result.imported.count == 1)
+    }
+
+    @Test func historyMergesAndScannerFindsCardPhotos() throws {
+        let card = try makeCard()
+        let found = ImportScanner.candidates(in: card.root)
+        #expect(Set(found.map(\.name)) == ["DSC_0001.NEF", "DSC_0001.JPG", "DSC_0002.JPG"])
+
+        let data = try makeTempFolder()
+        let history = ImportHistory(dataFolder: data)
+        try history.record(["a": "~/x"])
+        try history.record(["b": "~/y"])
+        #expect(history.load() == ["a": "~/x", "b": "~/y"])
+    }
+
+    @Test func scannerAcceptsFoldersAndIndividualPhotos() throws {
+        let card = try makeCard()
+        let loose = try makeTempFolder()
+        let single = loose.appendingPathComponent("Single shot.jpg")
+        try writeJPEG(to: single)
+        try writeJPEG(to: loose.appendingPathComponent("not chosen.jpg"))
+        let found = ImportScanner.candidates(from: [card.root, single, single])
+        #expect(Set(found.map(\.name)) == ["DSC_0001.NEF", "DSC_0001.JPG", "DSC_0002.JPG", "Single shot.jpg"])
+        #expect(found.count == 4, "a photo chosen twice is listed once")
+    }
+
+    @Test func importSettingsRoundTripInSettingsFile() throws {
+        var settings = SharedSettings()
+        settings.importOptions.renameFiles = true
+        settings.importOptions.backupFolder = "/Volumes/Backup/Photos"
+        settings.importOptions.includeSubfolders = false
+        let decoded = try JSONDecoder().decode(SharedSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.importOptions == settings.importOptions)
+        let old = try JSONDecoder().decode(SharedSettings.self, from: Data(#"{"autoAdvance": true}"#.utf8))
+        #expect(old.importOptions == ImportSettings())
+    }
+}
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func increment() { lock.lock(); count += 1; lock.unlock() }
 }

@@ -375,11 +375,13 @@ public struct RenamePlan: Sendable {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
     }
 
-    /// Removes characters that are illegal or troublesome in file names.
+    /// Removes characters that are illegal or troublesome in file names. Names never contain
+    /// spaces: each run of whitespace becomes one "_".
     public static func sanitize(_ name: String) -> String {
-        name.replacingOccurrences(of: "/", with: "-")
+        let cleaned = name.replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        return ImportLayout.noSpaces(cleaned)
     }
 
     private static func validate(_ items: [Item]) -> [String] {

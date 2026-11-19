@@ -61,6 +61,15 @@ app. Both should finish with no errors or warnings.
   JPEG of a pair also labeled the RAW). A non-RAW photo still *reads* a legacy `X.xmp` when no RAW
   shares the name (`Sidecar.legacyURL`). In file operations the shared `X.xmp` goes only with the
   photos that use it (`Group.usesSharedSidecar`); per-file `X.JPG.xmp` is a `CompanionFileType`.
+- **Never put spaces in file or folder names the app creates.** `RenamePlan.sanitize` and
+  `ImportLayout.noSpaces` turn whitespace into "_" (renames, imports, new folders, collection files).
+- **Import** (`PhotoOrganizerCore/Import.swift`, `Models/ImportModel.swift`, `Views/ImportView.swift`):
+  destination is always `<data folder>/images/YYYY/yyyy-MM-dd/` by capture date (`ImportLayout`).
+  `ImportPlan` groups same-name files so pairs share a new name; `Importer.run` copies with
+  SHA-256 verification (re-read with F_NOCACHE), copies sidecars/editor files, writes import tags,
+  then mirrors to the backup folder. `ImportHistory.json` (data folder) marks shots already imported.
+  Import options live in `SharedSettings.importOptions`. The browser's `.lastImport` source shows
+  files as they land.
 - Other editors' per-photo settings files (`CompanionFileType`: NX Studio `NKSC_PARAM/<file>.nksc`,
   RawTherapee `<file>.pp3`, DxO `<file>.dop`) must travel with their photo in every file operation.
   Any new file operation must handle them too (see `FileOperations`). For safety, a settings file is
@@ -122,7 +131,11 @@ the app's window**: `screencapture -l <windowID>`, with the window ID looked up 
 `build-app.sh` signs with the Developer ID Application identity (else Apple Development). Dev
 and release builds must share a team: the sandbox container and the saved bookmarks are tied to
 the signature, and a build from another team triggers macOS's "access data from other apps"
-prompt. Ad-hoc signing breaks them on every rebuild. The bundle ID is `io.pbcs.photoorganizer`
+prompt. Ad-hoc signing breaks them on every rebuild. Entitlements also grant **read-only** access to
+`/Volumes/` (cards) and the home folder (the import window's folder tree) via temporary
+exceptions, which is fine for Developer ID but would block a Mac App Store release. The import tree
+must only list a folder's children when it's expanded, so merely opening Import never reads
+Desktop / Documents / Downloads (that triggers macOS privacy prompts). The bundle ID is `io.pbcs.photoorganizer`
 (it was `local.photoorganizer` before v0.3). The app is MIT licensed (`LICENSE`, bundled in the app). Entitlements are in
 `Resources/PhotoOrganizer.entitlements`.
 
