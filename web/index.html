@@ -24,9 +24,10 @@
     <h1>photo organizer</h1>
     <p class="tagline">Your folders. Your files. No catalog.</p>
     <p class="lede">
-      A fast, native Mac app for sorting through your photos before you edit
-      them. Browse your folders, pick the keepers, add keywords and captions,
-      then open the best ones in Photoshop, NX Studio or any editor you like.
+      A fast, native Mac app for getting from a full memory card to your best
+      shots. Copy a shoot into tidy folders by date, pick the keepers, add
+      keywords and captions, then open the best ones in Photoshop, NX Studio or
+      any editor you like.
       Everything you add is saved next to your photos, in the standard format
       your other photo apps already understand.
     </p>
@@ -190,6 +191,18 @@
     <h2>What's inside</h2>
     <div class="cards">
       <div class="card">
+        <h3>Import from your card</h3>
+        <p>Insert a memory card and the import window opens. Photos are copied into folders by year and day, every copy is checked against the original, and an optional second copy goes to a backup drive. Cards you've already imported are recognized.</p>
+      </div>
+      <div class="card">
+        <h3>Start culling right away</h3>
+        <p>Photos appear as they're copied, so you can start picking while the import is still running. Your creator, copyright and keywords are added to every photo on the way in.</p>
+      </div>
+      <div class="card">
+        <h3>RAW + JPEG stacks</h3>
+        <p>When you shoot RAW and JPEG, each pair shows as one stack you can open with a click. Each file keeps its own rating and keywords, and moving or renaming a stack keeps the pair together.</p>
+      </div>
+      <div class="card">
         <h3>Browse your folders</h3>
         <p>Add any folders or drives to the sidebar and move through them instantly. Show a whole trip at once, subfolders included. New files appear as soon as they're saved.</p>
       </div>
@@ -234,6 +247,7 @@
     <h2>Where your work is kept</h2>
     <p>There is no database to back up, export or lose. It's all plain files you can see in the Finder.</p>
     <table class="kit">
+      <tr><th>Imported photos</th><td>Your data folder, by date: <code>images/2026/2026-11-19/</code>. File names never contain spaces</td></tr>
       <tr><th>Ratings, flags, labels</th><td>An XMP sidecar next to each photo (<code>DSC_0412.xmp</code>), the format Adobe apps use</td></tr>
       <tr><th>Keywords and captions</th><td>The same sidecar, in the standard IPTC fields</td></tr>
       <tr><th>Your photos</th><td>Never modified. Raw files, JPEGs and edits stay exactly as they are</td></tr>
@@ -253,7 +267,9 @@
       <tr><th>6 · 7 · 8 · 9</th><td>Red, yellow, green, blue label</td></tr>
       <tr><th>Space</th><td>Review full size (select 2–4 photos to compare)</td></tr>
       <tr><th>Z</th><td>Zoom to 100% while reviewing</td></tr>
+      <tr><th>S</th><td>Open or close a RAW + JPEG stack</td></tr>
       <tr><th>Return</th><td>Open in your editor</td></tr>
+      <tr><th>Command Shift I</th><td>Import photos from a card, camera or folder</td></tr>
       <tr><th>Command Shift R</th><td>Rename</td></tr>
       <tr><th>Command Shift O</th><td>Add a folder to the sidebar</td></tr>
     </table>
@@ -268,9 +284,10 @@
         <strong>Open the download and drag Photo Organizer into Applications.</strong>
       </li>
       <li>
-        <strong>Open Photo Organizer.</strong> It starts with your Pictures
-        folder. Add your other photo folders and drives with
-        <strong>Command&nbsp;Shift&nbsp;O</strong>, or drag them onto the sidebar.
+        <strong>Insert a memory card</strong> (or choose File → Import Photos)
+        and import your shoot. To browse photos you already have, add their
+        folders with <strong>Command&nbsp;Shift&nbsp;O</strong>, or drag them onto
+        the sidebar.
       </li>
       <li>
         <strong>Choose your editors</strong> in Settings (Command&nbsp;,).
@@ -278,9 +295,8 @@
       </li>
     </ol>
     <p>
-      Photo Organizer only opens folders you give it, and nothing else is
-      installed. Settings and collections live in
-      <code>~/Pictures/Photo Organizer</code>.
+      Nothing else is installed. Your imported photos, settings and
+      collections live in <code>~/Pictures/Photo Organizer</code>.
     </p>
   </div>
 </section>
