@@ -7,9 +7,9 @@ struct SidebarView: View {
     @Environment(DataFolderModel.self) private var dataFolder
     @Environment(ImportModel.self) private var importer
 
-    private var hasLastImport: Bool {
-        importer.isImporting || !browser.lastImportURLs.isEmpty || importer.lastSummary != nil
-    }
+    @AppStorage("sidebarImportsExpanded") private var importsExpanded = true
+    @AppStorage("sidebarSmartExpanded") private var smartExpanded = true
+    @AppStorage("sidebarManualExpanded") private var manualExpanded = true
 
     var body: some View {
         let selection = Binding<BrowseSource?>(
@@ -31,16 +31,45 @@ struct SidebarView: View {
                 }
             }
             Section("Collections") {
-                // The running or most recent import, first among the collections.
-                if hasLastImport {
-                    LastImportRow()
-                        .tag(BrowseSource.lastImport)
+                // Every import, newest first: a collection by import date and time.
+                if !dataFolder.importSessions.isEmpty {
+                    DisclosureGroup(isExpanded: $importsExpanded) {
+                        ForEach(dataFolder.importSessions) { session in
+                            ImportSessionRow(session: session)
+                                .tag(BrowseSource.importSession(session.id))
+                        }
+                    } label: {
+                        Label("Imports", systemImage: "tray.full")
+                            .badge(dataFolder.importSessions.count)
+                    }
                 }
-                ForEach(dataFolder.collections) { collection in
-                    CollectionRow(collection: collection)
-                        .tag(BrowseSource.collection(collection.id))
+                // Smart collections get a group of their own, like Imports.
+                let smart = dataFolder.collections.filter { $0.kind == .smart }
+                if !smart.isEmpty {
+                    DisclosureGroup(isExpanded: $smartExpanded) {
+                        ForEach(smart) { collection in
+                            CollectionRow(collection: collection)
+                                .tag(BrowseSource.collection(collection.id))
+                        }
+                    } label: {
+                        Label("Smart Collections", systemImage: "sparkles.rectangle.stack")
+                            .badge(smart.count)
+                    }
                 }
-                if dataFolder.collections.isEmpty && !hasLastImport {
+                // Hand-picked collections, grouped like the others.
+                let manual = dataFolder.collections.filter { $0.kind == .manual }
+                if !manual.isEmpty {
+                    DisclosureGroup(isExpanded: $manualExpanded) {
+                        ForEach(manual) { collection in
+                            CollectionRow(collection: collection)
+                                .tag(BrowseSource.collection(collection.id))
+                        }
+                    } label: {
+                        Label("Collections", systemImage: "rectangle.stack")
+                            .badge(manual.count)
+                    }
+                }
+                if dataFolder.collections.isEmpty && dataFolder.importSessions.isEmpty {
                     Text("Use “Add to Collection” on photos, or save a search.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -61,6 +90,7 @@ struct SidebarView: View {
                     Button("New Collection…") {
                         browser.namePrompt = NamePrompt(purpose: .newCollection(adding: []))
                     }
+                    Button("New Smart Collection…") { browser.newSmartCollection() }
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
@@ -70,43 +100,6 @@ struct SidebarView: View {
             }
             .padding(10)
         }
-    }
-}
-
-/// "Last Import" in the sidebar, with live progress while copying.
-private struct LastImportRow: View {
-    @Environment(ImportModel.self) private var importer
-    @Environment(BrowserModel.self) private var browser
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Label("Last Import", systemImage: "clock.arrow.circlepath")
-                Spacer()
-                if importer.isImporting {
-                    Button {
-                        importer.cancelImport()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Stop importing (files already copied stay)")
-                } else {
-                    Text("\(browser.lastImportURLs.count)").font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            if importer.isImporting {
-                let p = importer.progress
-                ProgressView(value: Double(p.bytesDone), total: Double(max(p.bytesTotal, 1)))
-                    .controlSize(.small)
-                Text("\(p.filesDone) of \(p.filesTotal) · \(p.currentName)")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            } else if let summary = importer.lastSummary {
-                Text(summary).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            }
-        }
-        .padding(.vertical, 2)
     }
 }
 
@@ -144,6 +137,75 @@ private struct FolderRow: View {
     }
 }
 
+/// One import: when, from where, how many photos. The running import shows its progress.
+private struct ImportSessionRow: View {
+    @Environment(BrowserModel.self) private var browser
+    @Environment(DataFolderModel.self) private var dataFolder
+    @Environment(ImportModel.self) private var importer
+    let session: ImportSession
+
+    var body: some View {
+        let isRunning = importer.runningSessionID == session.id
+        // Always two one-line rows: a row that changes height inside the list leaves stale copies
+        // of itself behind.
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 4) {
+                Text(session.started.formatted(date: .abbreviated, time: .shortened))
+                    .lineLimit(1)
+                Spacer(minLength: 2)
+                if isRunning {
+                    let p = importer.progress
+                    ProgressView(value: Double(p.bytesDone), total: Double(max(p.bytesTotal, 1)))
+                        .progressViewStyle(.circular)
+                        .controlSize(.mini)
+                    Button {
+                        importer.cancelImport()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Stop importing (files already copied stay)")
+                }
+            }
+            Text(detail(isRunning: isRunning))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .help("Imported \(session.started.formatted(date: .long, time: .standard)) from \(session.source)"
+              + (importer.lastSessionID == session.id ? "\n" + (importer.lastSummary ?? "") : ""))
+        .contextMenu {
+            Button("Save as Collection…") {
+                browser.namePrompt = NamePrompt(purpose: .newCollection(adding: session.fileURLs),
+                                                initialName: "Import " + session.started.formatted(.iso8601.year().month().day()))
+            }
+            Divider()
+            Button("Remove from Imports") {
+                if browser.source == .importSession(session.id) { browser.close() }
+                dataFolder.removeImportSession(session)
+            }
+            .help("Removes this entry from the list; the photos stay where they are")
+        }
+    }
+}
+
+extension ImportSessionRow {
+    /// "NIKON Z 8 · 5 photos", "NIKON Z 8 · 3 of 5", or the latest import's outcome
+    /// ("NIKON Z 8 · 5 photos · card ejected").
+    fileprivate func detail(isRunning: Bool) -> String {
+        if isRunning {
+            let p = importer.progress
+            return "\(session.source) · \(p.filesDone) of \(p.filesTotal)"
+        }
+        if importer.lastSessionID == session.id, let summary = importer.lastSummary {
+            return "\(session.source) · " + summary.replacingOccurrences(of: "Imported ", with: "")
+        }
+        return "\(session.source) · \(session.files.count) photo\(session.files.count == 1 ? "" : "s")"
+    }
+}
+
 private struct CollectionRow: View {
     @Environment(BrowserModel.self) private var browser
     let collection: PhotoCollection
@@ -161,7 +223,7 @@ private struct CollectionRow: View {
                 }
             }
         } icon: {
-            Image(systemName: collection.kind == .smart ? "gearshape" : "rectangle.stack")
+            Image(systemName: collection.kind == .smart ? "sparkles" : "rectangle.stack")
         }
         .padding(.vertical, 1)
         .background(RoundedRectangle(cornerRadius: 4).fill(isTargeted ? Color.accentColor.opacity(0.3) : .clear))
@@ -173,6 +235,9 @@ private struct CollectionRow: View {
             return true
         } isTargeted: { isTargeted = $0 && collection.kind == .manual }
         .contextMenu {
+            if collection.kind == .smart {
+                Button("Edit Smart Collection…") { browser.editSmartCollection(collection.id) }
+            }
             Button("Rename…") {
                 browser.namePrompt = NamePrompt(purpose: .renameCollection(collection.id), initialName: collection.name)
             }

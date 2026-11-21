@@ -92,9 +92,22 @@ public enum MetadataReader {
         return raw.flatMap(parseExifDate)
     }
 
+    /// Capture date, camera and lens from one read of the file (smart-collection rules).
+    public static func ruleInfo(of url: URL) -> (date: Date?, camera: String?, lens: String?) {
+        let props = properties(of: url)
+        let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
+        let aux = props[kCGImagePropertyExifAuxDictionary as String] as? [String: Any] ?? [:]
+        let base = importInfo(props)
+        let lens = (exif[kCGImagePropertyExifLensModel as String] ?? aux[kCGImagePropertyExifAuxLensModel as String]) as? String
+        return (base.date, base.camera, lens)
+    }
+
     /// Capture date and camera model from one read of the file (used when scanning a card).
     public static func importInfo(of url: URL) -> (date: Date?, camera: String?) {
-        let props = properties(of: url)
+        importInfo(properties(of: url))
+    }
+
+    private static func importInfo(_ props: [String: Any]) -> (date: Date?, camera: String?) {
         let exif = props[kCGImagePropertyExifDictionary as String] as? [String: Any] ?? [:]
         let tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
         let raw = (exif[kCGImagePropertyExifDateTimeOriginal as String]

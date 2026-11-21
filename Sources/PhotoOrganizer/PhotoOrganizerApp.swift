@@ -77,6 +77,8 @@ struct PhotoCommands: Commands {
                 browser.namePrompt = NamePrompt(purpose: .newCollection(adding: browser.includingStacks(browser.selectedURLs)))
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("New Smart Collection…") { browser.newSmartCollection() }
+                .keyboardShortcut("n", modifiers: [.command, .shift, .option])
             Button("New Folder…") {
                 if let folder = browser.currentFolder { browser.namePrompt = NamePrompt(purpose: .newFolder(in: folder)) }
             }

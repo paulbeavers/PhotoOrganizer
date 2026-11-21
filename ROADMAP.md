@@ -20,6 +20,11 @@ names), with everything below. Not yet tested on a real card in the sandboxed bu
 - **RAW+JPEG choice:** import both, RAW only, or JPEG only.
 - **Cull while copying:** photos appear in the grid as they land; eject the card when done.
 
+## Smart collections and imports ✅ built 2026-11-19
+
+Rule-based smart collections (keywords, ratings, flags, labels, text and IPTC fields, file type,
+camera, lens, capture and import dates; match all/any) and a list of every import under Collections.
+
 ## 2. Culling fast
 
 ✅ P / X / U flags, 0–5 ratings, auto-advance, loupe and 2–4-up compare, 100% zoom, stacks.

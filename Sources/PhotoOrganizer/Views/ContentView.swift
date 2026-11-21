@@ -30,6 +30,17 @@ struct ContentView: View {
         .navigationSubtitle(subtitle)
         .searchable(text: $browser.criteria.text, placement: .toolbar, prompt: "Name, keyword, caption…")
         .toolbar {
+            // Where photos come in, in plain sight: opens the import window.
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    importer.present()
+                } label: {
+                    Label("Add Photos", systemImage: "plus.rectangle.on.rectangle")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help("Import photos from a card or a folder (⇧⌘I)")
+                .disabled(importer.isImporting)
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 if browser.currentFolder != nil {
                     Toggle(isOn: $browser.includeSubfolders) {
@@ -83,6 +94,9 @@ struct ContentView: View {
         .sheet(item: $browser.namePrompt) { prompt in
             NamePromptSheet(prompt: prompt)
         }
+        .sheet(item: $browser.smartEditor) { request in
+            SmartCollectionEditor(request: request)
+        }
         .sheet(item: $browser.renameRequest) { request in
             BatchRenameSheet(urls: request.urls)
         }
@@ -106,6 +120,18 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("Their NX Studio, RawTherapee and DxO edit files go to the Trash too. XMP sidecars are trashed unless another file still shares them.")
+        }
+        .alert("Move exports to the Trash?", isPresented: Binding(
+            get: { browser.cullCleanupRequest != nil },
+            set: { if !$0 { browser.cullCleanupRequest = nil } }
+        ), presenting: browser.cullCleanupRequest) { request in
+            Button("Move to Trash", role: .destructive) { request.confirm() }
+            Button("Cancel", role: .cancel) {}
+        } message: { request in
+            let names = request.files.map(\.lastPathComponent)
+            Text("These photos leave the Picked folder (with their edits). These files exported from them there go to the Trash:\n\n"
+                 + names.prefix(12).joined(separator: "\n")
+                 + (names.count > 12 ? "\n…and \(names.count - 12) more" : ""))
         }
         .alert("Something went wrong", isPresented: errorBinding(\.errorMessage, on: browser)) {
             Button("OK") { browser.errorMessage = nil }
@@ -149,13 +175,19 @@ private struct FilterBar: View {
 
     var body: some View {
         let criteria = browser.criteria
-        let isSmart = browser.currentCollection?.kind == .smart
-        if !criteria.isEmpty || isSmart {
+        let smart = browser.currentCollection.flatMap { $0.kind == .smart ? $0 : nil }
+        if !criteria.isEmpty || smart != nil {
             HStack(spacing: 6) {
-                Image(systemName: isSmart ? "gearshape" : "line.3.horizontal.decrease.circle")
+                Image(systemName: smart != nil ? "sparkles" : "line.3.horizontal.decrease.circle")
                     .foregroundStyle(.secondary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
+                        if let smart {
+                            Text(SmartRulesSummary.text(for: smart.effectiveRules))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                         if !criteria.text.trimmingCharacters(in: .whitespaces).isEmpty {
                             chip("“\(criteria.text)”") { browser.criteria.text = "" }
                         }
@@ -175,22 +207,14 @@ private struct FilterBar: View {
                                 browser.criteria.keywords.removeAll { $0 == keyword }
                             }
                         }
-                        if criteria.isEmpty {
-                            Text("No criteria. This smart collection shows every photo in its folders.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
                     }
                 }
                 Spacer(minLength: 8)
-                if isSmart {
-                    if browser.hasUnsavedSmartChanges {
-                        Button("Save Changes") { browser.saveSmartCollectionChanges() }
-                            .help("Update the smart collection with these filters")
-                    }
+                if let smart {
+                    Button("Edit Rules…") { browser.editSmartCollection(smart.id) }
+                        .help("Change what this smart collection includes")
                 } else {
-                    Button("Save as Smart Collection…") {
-                        browser.namePrompt = NamePrompt(purpose: .saveSmartCollection)
-                    }
+                    Button("Save as Smart Collection…") { browser.saveSearchAsSmartCollection() }
                 }
                 if !criteria.isEmpty {
                     Button("Clear") { browser.criteria = SearchCriteria() }

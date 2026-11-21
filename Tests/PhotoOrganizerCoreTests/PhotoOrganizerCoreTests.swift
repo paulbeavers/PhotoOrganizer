@@ -641,7 +641,7 @@ private func legacySidecar(rating: Int, keyword: String = "legacy") -> String {
         var settings = ImportSettings()
         let all = ImportPlan(candidates: card.candidates, settings: settings)
         #expect(all.groups.map(\.baseName) == ["DSC_0001", "DSC_0002"])
-        #expect(all.groups.map(\.folder) == ["2026/2026-01-05", "2026/2026-11-19"])
+        #expect(all.groups.map(\.folder) == ["2026/2026-01-05/Imported", "2026/2026-11-19/Imported"])
         #expect(all.groups[0].members.count == 2)
 
         settings.fileTypes = .rawOnly
@@ -674,12 +674,12 @@ private func legacySidecar(rating: Int, keyword: String = "legacy") -> String {
         let result = Importer.run(plan, options: .init(imagesRoot: images, backupRoot: backup, settings: settings))
         #expect(result.failures.isEmpty)
         #expect(result.imported.map { $0.path.replacingOccurrences(of: images.path + "/", with: "") }
-                == ["2026/2026-01-05/DSC_0001.NEF", "2026/2026-01-05/DSC_0001.JPG", "2026/2026-11-19/DSC_0002.JPG"])
+                == ["2026/2026-01-05/Imported/DSC_0001.NEF", "2026/2026-01-05/Imported/DSC_0001.JPG", "2026/2026-11-19/Imported/DSC_0002.JPG"])
 
-        let day = images.appendingPathComponent("2026/2026-01-05")
+        let day = images.appendingPathComponent("2026/2026-01-05/Imported")
         for name in ["DSC_0001.NEF", "DSC_0001.JPG", "DSC_0001.xmp", "DSC_0001.JPG.xmp", "NKSC_PARAM/DSC_0001.NEF.nksc"] {
             #expect(FileManager.default.fileExists(atPath: day.appendingPathComponent(name).path), "\(name) imported")
-            #expect(FileManager.default.fileExists(atPath: backup.appendingPathComponent("2026/2026-01-05/\(name)").path), "\(name) backed up")
+            #expect(FileManager.default.fileExists(atPath: backup.appendingPathComponent("2026/2026-01-05/Imported/\(name)").path), "\(name) backed up")
         }
         #expect(try Data(contentsOf: day.appendingPathComponent("DSC_0001.NEF")) == Data(contentsOf: card.candidates[0].url))
 
@@ -687,10 +687,10 @@ private func legacySidecar(rating: Int, keyword: String = "legacy") -> String {
         #expect(rawTags.rating == 4, "existing tags travel with the photo")
         #expect(rawTags[.creator] == "Paul" && rawTags[.copyright] == "© 2026 Paul")
         #expect(rawTags.keywords == ["Lake", "Places|Texas"])
-        #expect(TagStore().tags(for: backup.appendingPathComponent("2026/2026-11-19/DSC_0002.JPG")).keywords == ["Lake", "Places|Texas"])
+        #expect(TagStore().tags(for: backup.appendingPathComponent("2026/2026-11-19/Imported/DSC_0002.JPG")).keywords == ["Lake", "Places|Texas"])
 
         #expect(result.history.count == 3)
-        #expect(result.history[card.candidates[2].historyKey] == PortablePath.string(images.appendingPathComponent("2026/2026-11-19/DSC_0002.JPG")))
+        #expect(result.history[card.candidates[2].historyKey] == PortablePath.string(images.appendingPathComponent("2026/2026-11-19/Imported/DSC_0002.JPG")))
     }
 
     @Test func secondImportOfSameNamesDoesNotOverwrite() throws {
@@ -765,4 +765,246 @@ private final class Counter: @unchecked Sendable {
     private var count = 0
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
     func increment() { lock.lock(); count += 1; lock.unlock() }
+}
+
+@Suite struct SmartRuleTests {
+    private let now = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 19, hour: 12))!
+    private func day(_ y: Int, _ m: Int, _ d: Int, _ h: Int = 10) -> Date {
+        Calendar.current.date(from: DateComponents(year: y, month: m, day: d, hour: h))!
+    }
+
+    private var heron: PhotoFacts {
+        PhotoFacts(url: URL(fileURLWithPath: "/p/DSC_4470.NEF"),
+                   tags: PhotoTags(rating: 4, isPicked: true, label: .green,
+                                   keywords: ["Birds|Heron", "Brazos Bend"],
+                                   fields: [.title: "Great blue heron", .city: "Needville", .country: "USA"]),
+                   captureDate: day(2026, 1, 2), importDate: day(2026, 11, 17),
+                   camera: "NIKON Z 8", lens: "NIKKOR Z 180-600mm f/5.6-6.3 VR")
+    }
+
+    private func check(_ field: SmartField, _ op: SmartOperator, _ value: String = "") -> Bool {
+        SmartRule(field: field, op: op, value: value).matches(heron, now: now)
+    }
+
+    @Test func keywordsTextAndTags() {
+        #expect(check(.keyword, .contains, "Birds"), "a parent keyword matches its children")
+        #expect(check(.keyword, .contains, "heron"))
+        #expect(!check(.keyword, .contains, "Sunset"))
+        #expect(check(.keyword, .doesNotContain, "Sunset"))
+        #expect(check(.keyword, .isNotEmpty) && !check(.keyword, .isEmpty))
+        #expect(check(.anyText, .contains, "blue heron"))
+        #expect(check(.fileName, .startsWith, "dsc_44"))
+        #expect(check(.title, .contains, "heron") && !check(.caption, .isNotEmpty))
+        #expect(check(.location, .contains, "needville"))
+        #expect(check(.rating, .atLeast, "3") && !check(.rating, .atLeast, "5") && check(.rating, .equals, "4"))
+        #expect(check(.flag, .is, "picked") && check(.flag, .isNot, "rejected"))
+        #expect(check(.label, .is, "Green") && check(.label, .isNotEmpty) && check(.label, .isNot, "Red"))
+        #expect(check(.fileType, .is, "raw") && check(.fileType, .isNot, "jpeg"))
+        #expect(check(.camera, .is, "nikon z 8") && check(.lens, .contains, "180-600"))
+    }
+
+    @Test func rejectsAreNotLowRated() {
+        let rejected = PhotoFacts(url: URL(fileURLWithPath: "/p/a.jpg"), tags: PhotoTags(rating: -1))
+        #expect(!SmartRule(field: .rating, op: .atMost, value: "2").matches(rejected))
+        #expect(SmartRule(field: .flag, op: .is, value: "rejected").matches(rejected))
+        #expect(SmartRule(field: .fileType, op: .is, value: "jpeg").matches(rejected))
+    }
+
+    @Test func dates() {
+        #expect(check(.captureDate, .on, "2026-01-02"))
+        #expect(check(.captureDate, .before, "2026-01-03") && !check(.captureDate, .before, "2026-01-02"))
+        #expect(check(.captureDate, .after, "2026-01-01") && !check(.captureDate, .after, "2026-01-02"))
+        #expect(check(.importDate, .inLastDays, "7") && !check(.importDate, .inLastDays, "1"))
+        #expect(!check(.captureDate, .inLastDays, "30"))
+        let unknown = PhotoFacts(url: URL(fileURLWithPath: "/p/b.jpg"), tags: .empty)
+        #expect(!SmartRule(field: .importDate, op: .inLastDays, value: "7").matches(unknown, now: now))
+    }
+
+    @Test func matchAllOrAny() {
+        var rules = SmartRules(rules: [SmartRule(field: .rating, op: .atLeast, value: "5"),
+                                       SmartRule(field: .keyword, op: .contains, value: "Birds")])
+        #expect(!rules.matches(heron, now: now))
+        rules.matchAll = false
+        #expect(rules.matches(heron, now: now))
+        #expect(SmartRules().matches(heron, now: now), "no rules: everything matches")
+        #expect(rules.needsMetadata == false)
+        rules.rules.append(SmartRule(field: .camera, op: .contains, value: "Z 8"))
+        #expect(rules.needsMetadata)
+    }
+
+    @Test func oldSavedSearchesBecomeRules() {
+        let old = SearchCriteria(text: "heron", minimumRating: 3, label: .green, flag: .notRejected, keywords: ["Birds"])
+        let rules = SmartRules(criteria: old)
+        #expect(rules.rules.map(\.field) == [.anyText, .rating, .label, .flag, .keyword])
+        #expect(rules.matches(heron, now: now))
+        let collection = PhotoCollection(name: "Old", kind: .smart, criteria: old)
+        // Same conditions (each conversion gives the rules new IDs).
+        #expect(collection.effectiveRules.rules.map { "\($0.field)|\($0.op)|\($0.value)" }
+                == rules.rules.map { "\($0.field)|\($0.op)|\($0.value)" })
+    }
+
+    @Test func rulesRoundTripInCollectionFiles() throws {
+        let folder = try makeTempFolder()
+        let store = CollectionStore(folder: folder)
+        let collection = PhotoCollection(name: "Herons", kind: .smart, folders: ["~/Pictures/Photo Organizer/images"],
+                                         rules: SmartRules(matchAll: false, rules: [SmartRule(field: .keyword, op: .contains, value: "Birds|Heron"),
+                                                                                     SmartRule(field: .importDate, op: .inLastDays, value: "30")]))
+        try store.save(collection)
+        #expect(store.loadAll() == [collection])
+    }
+}
+
+@Suite struct ImportLogTests {
+    @Test func savesLoadsNewestFirstAndIndexesDates() throws {
+        let data = try makeTempFolder()
+        let log = ImportLog(dataFolder: data)
+        let older = ImportSession(started: Date(timeIntervalSince1970: 1_700_000_000), source: "NIKON Z 8", files: ["~/p/a.NEF", "~/p/b.NEF"])
+        let newer = ImportSession(started: Date(timeIntervalSince1970: 1_700_090_000), source: "pabphoto", files: ["~/p/b.NEF", "~/p/c.jpg"])
+        try log.save(older)
+        try log.save(newer)
+        #expect(log.loadAll() == [newer, older])
+        let names = try FileManager.default.contentsOfDirectory(atPath: log.folder.path)
+        #expect(names.allSatisfy { !$0.contains(" ") }, "no spaces in file names")
+
+        let dates = ImportLog.importDates(log.loadAll())
+        #expect(dates["~/p/a.nef"] == older.started)
+        #expect(dates["~/p/b.nef"] == newer.started, "re-imported: the newest import wins")
+
+        try log.delete(older)
+        #expect(log.loadAll() == [newer])
+
+        // A file for the same import under another name (saved in another time zone): saving keeps one.
+        let foreign = log.folder.appendingPathComponent("2023-11-16_05-00-00_other.json")
+        try FileManager.default.copyItem(at: log.folder.appendingPathComponent(try FileManager.default.contentsOfDirectory(atPath: log.folder.path)[0]), to: foreign)
+        var moved = newer
+        moved.files = ["~/p/Picked/b.NEF"]
+        try log.save(moved)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: log.folder.path).count == 1)
+        #expect(log.loadAll() == [moved])
+    }
+
+    @Test func rebuildsEarlierImportsFromHistory() throws {
+        let folder = try makeTempFolder()
+        var history: [String: String] = [:]
+        for name in ["a.jpg", "b.jpg"] {
+            let url = folder.appendingPathComponent(name)
+            try writeJPEG(to: url)
+            history[name] = PortablePath.string(url)
+        }
+        history["gone"] = "/nonexistent/x.jpg"
+        let sessions = ImportLog.reconstruct(history: history)
+        #expect(sessions.count == 1)
+        #expect(sessions[0].files.count == 2)
+    }
+
+    @Test func importTimeIsDateAddedNotTheOriginalPhotoDate() throws {
+        // Importer.copyFile keeps the original modification date; macOS then moves the creation
+        // date back too. The rebuilt import must still be dated "now", not when the photo was taken.
+        let folder = try makeTempFolder()
+        let source = folder.appendingPathComponent("src.jpg"), copy = folder.appendingPathComponent("copy.jpg")
+        try writeJPEG(to: source)
+        let taken = Date(timeIntervalSinceNow: -200 * 86_400)
+        try FileManager.default.setAttributes([.modificationDate: taken], ofItemAtPath: source.path)
+        try Importer.copyFile(from: source, to: copy, verify: false)
+        let session = try #require(ImportLog.reconstruct(history: ["k": PortablePath.string(copy)]).first)
+        #expect(abs(session.started.timeIntervalSinceNow) < 120, "dated by when it was added, not \(taken)")
+    }
+}
+
+@Suite struct CullFolderTests {
+    /// A day folder with a RAW+JPEG pair in Imported (the RAW is a JPEG with a .NEF name: only the
+    /// extension matters here), its sidecar and an NX Studio edit.
+    private func makeDay() throws -> (day: URL, nef: URL, jpg: URL) {
+        let day = try makeTempFolder().appendingPathComponent("2026-11-19")
+        let imported = day.appendingPathComponent(CullFolders.imported)
+        try FileManager.default.createDirectory(at: imported.appendingPathComponent("NKSC_PARAM"), withIntermediateDirectories: true)
+        let nef = imported.appendingPathComponent("DSC_0370.NEF"), jpg = imported.appendingPathComponent("DSC_0370.JPG")
+        try writeJPEG(to: nef)
+        try writeJPEG(to: jpg)
+        try TagStore().update(nef) { $0.pick() }
+        try Data("edit".utf8).write(to: imported.appendingPathComponent("NKSC_PARAM/DSC_0370.NEF.nksc"))
+        return (day, nef, jpg)
+    }
+
+    private func exists(_ day: URL, _ path: String) -> Bool {
+        FileManager.default.fileExists(atPath: day.appendingPathComponent(path).path)
+    }
+
+    @Test func pairStateAndFolders() throws {
+        #expect(CullFolders.State(group: [PhotoTags(isPicked: true), .empty]) == .picked)
+        #expect(CullFolders.State(group: [PhotoTags(rating: -1), .empty]) == .rejected)
+        #expect(CullFolders.State(group: [.empty]) == CullFolders.State.none)
+        #expect(CullFolders.State.none.folderName == "Imported")
+        let (day, nef, _) = try makeDay()
+        #expect(CullFolders.dayFolder(of: nef)?.lastPathComponent == day.lastPathComponent)
+        #expect(CullFolders.dayFolder(of: day.appendingPathComponent("Picked/x.jpg")) != nil)
+        #expect(CullFolders.dayFolder(of: day.appendingPathComponent("Other/x.jpg")) == nil)
+    }
+
+    @Test func pickingMovesThePairWithSidecarAndEdits() throws {
+        let (day, nef, jpg) = try makeDay()
+        let result = CullFolders.move([nef, jpg], to: .picked)
+        #expect(result.failures.isEmpty)
+        for path in ["Picked/DSC_0370.NEF", "Picked/DSC_0370.JPG", "Picked/DSC_0370.xmp", "Picked/NKSC_PARAM/DSC_0370.NEF.nksc"] {
+            #expect(exists(day, path), "\(path)")
+        }
+        #expect(!exists(day, "Imported/DSC_0370.NEF") && !exists(day, "Imported/DSC_0370.xmp"))
+        let pickedNEF = day.appendingPathComponent("Picked/DSC_0370.NEF")
+        #expect(result.completed[nef]?.lastPathComponent == "DSC_0370.NEF")
+        #expect(TagStore().tags(for: pickedNEF).isPicked, "tags travel with the photo")
+
+        // Unflag: back to Imported, edits included.
+        let back = CullFolders.move([pickedNEF, day.appendingPathComponent("Picked/DSC_0370.JPG")], to: .none)
+        #expect(back.failures.isEmpty)
+        #expect(exists(day, "Imported/DSC_0370.NEF") && exists(day, "Imported/NKSC_PARAM/DSC_0370.NEF.nksc"))
+        #expect(!exists(day, "Picked/DSC_0370.NEF"))
+        _ = jpg
+    }
+
+    @Test func exportsStayAndAreToldApart() throws {
+        let (day, nef, jpg) = try makeDay()
+        _ = CullFolders.move([nef, jpg], to: .picked)
+        let picked = day.appendingPathComponent("Picked")
+        let export = picked.appendingPathComponent("DSC_0370.TIF")
+        try writeJPEG(to: export)
+        let originals: Set<String> = ["DSC_0370.NEF", "DSC_0370.JPG"]
+        let group = CullFolders.group(of: picked.appendingPathComponent("DSC_0370.NEF")) { originals.contains($0.lastPathComponent) }
+        #expect(Set(group.originals.map(\.lastPathComponent)) == originals)
+        #expect(group.exports.map(\.lastPathComponent) == ["DSC_0370.TIF"])
+
+        _ = CullFolders.move(group.originals, to: .rejected)
+        #expect(exists(day, "Rejected/DSC_0370.NEF") && exists(day, "Picked/DSC_0370.TIF"), "exports never move")
+    }
+
+    @Test func unknownPhotosMoveTogetherAndOutsidersStay() throws {
+        let folder = try makeTempFolder()
+        let loose = folder.appendingPathComponent("a.jpg")
+        try writeJPEG(to: loose)
+        #expect(CullFolders.move([loose], to: .picked).completed.isEmpty, "not in a day folder: stays")
+        let (_, nef, _) = try makeDay()
+        let group = CullFolders.group(of: nef) { _ in false }
+        #expect(group.originals.count == 2 && group.exports.isEmpty)
+    }
+
+    @Test func importListFollowsMovedPhotos() {
+        var session = ImportSession(source: "card", files: ["~/p/Imported/A.NEF", "~/p/Imported/B.NEF"])
+        let moved = session.relocate([PortablePath.url("~/p/Imported/a.nef"): PortablePath.url("~/p/Picked/A.NEF")])
+        #expect(moved && session.files == ["~/p/Picked/A.NEF", "~/p/Imported/B.NEF"])
+    }
+
+    @Test func scannerShowsALinkAsItsPhotoOnce() throws {
+        let (day, nef, _) = try makeDay()
+        let other = day.appendingPathComponent("Other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: other.appendingPathComponent("DSC_0370.NEF").path,
+                                                   withDestinationPath: "../Imported/DSC_0370.NEF")
+        let viaLink = try FolderScanner.photos(in: other)
+        #expect(viaLink.map { $0.url.resolvingSymlinksInPath().path } == [nef.resolvingSymlinksInPath().path])
+        #expect(try FolderScanner.photos(in: day, recursive: true).count == 2, "a photo and a link to it count once")
+    }
+
+    @Test func importsLandInImported() {
+        let date = Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 19, hour: 10))!
+        #expect(ImportLayout.destinationFolder(for: date) == "2026/2026-11-19/Imported")
+    }
 }

@@ -27,6 +27,8 @@ final class DataFolderModel {
     private(set) var collections: [PhotoCollection] = []
     private(set) var keywords = KeywordList()
     private(set) var settings = SharedSettings()
+    /// Every import, newest first (one file each in `Imports/`).
+    private(set) var importSessions: [ImportSession] = []
     var errorMessage: String?
     @ObservationIgnored private var hasLoadedSettings = false
 
@@ -57,7 +59,7 @@ final class DataFolderModel {
     }
 
     var collectionsFolder: URL { url.appendingPathComponent("Collections", isDirectory: true) }
-    /// Where imports go: `images/YYYY/yyyy-MM-dd/` (see `ImportLayout`).
+    /// Where imports go: `images/YYYY/yyyy-MM-dd/Imported/` (see `ImportLayout`, `CullFolders`).
     var imagesURL: URL { url.appendingPathComponent(ImportLayout.rootFolderName, isDirectory: true) }
     var keywordsFile: URL { url.appendingPathComponent("Keywords.txt") }
     var settingsFile: URL { settingsStore.fileURL }
@@ -73,6 +75,43 @@ final class DataFolderModel {
         let text = (try? String(contentsOf: keywordsFile, encoding: .utf8)) ?? ""
         let loadedKeywords = KeywordList(text: text)
         if loadedKeywords != keywords { keywords = loadedKeywords }
+        loadImportSessions()
+    }
+
+    // MARK: - Imports
+
+    private var importLog: ImportLog { ImportLog(dataFolder: url) }
+
+    private func loadImportSessions() {
+        let log = importLog
+        // Imports made before the log existed: rebuild them once from ImportHistory.json.
+        if !FileManager.default.fileExists(atPath: log.folder.path) {
+            let history = ImportHistory(dataFolder: url).load()
+            if !history.isEmpty {
+                for session in ImportLog.reconstruct(history: history) { try? log.save(session) }
+            }
+        }
+        let loaded = log.loadAll()
+        if loaded != importSessions { importSessions = loaded }
+    }
+
+    func importSession(_ id: UUID) -> ImportSession? {
+        importSessions.first { $0.id == id }
+    }
+
+    func saveImportSession(_ session: ImportSession) {
+        do {
+            try importLog.save(session)
+            loadImportSessions()
+        } catch {
+            errorMessage = "Couldn't record the import: \(error.localizedDescription)"
+        }
+    }
+
+    /// Removes an import from the list (the photos themselves stay).
+    func removeImportSession(_ session: ImportSession) {
+        try? importLog.delete(session)
+        loadImportSessions()
     }
 
     // MARK: - Settings.json
@@ -242,12 +281,18 @@ final class DataFolderModel {
         save(collection)
     }
 
-    /// Keeps manual collections pointing at photos the app moved or renamed.
+    /// Keeps manual collections and the import list pointing at photos the app moved or renamed.
     func relocate(_ moves: [URL: URL]) {
         guard !moves.isEmpty else { return }
         for var collection in collections where collection.kind == .manual {
             if collection.relocate(moves) { save(collection) }
         }
+        var sessionsChanged = false
+        for var session in importSessions where session.relocate(moves) {
+            do { try importLog.save(session); sessionsChanged = true }
+            catch { errorMessage = "Couldn't update the import list: \(error.localizedDescription)" }
+        }
+        if sessionsChanged { loadImportSessions() }
     }
 
     // MARK: - Keywords

@@ -90,22 +90,34 @@ public struct PhotoCollection: Codable, Identifiable, Hashable, Sendable {
     public var items: [String]
     /// Smart: folders to search (portable paths, searched recursively). Empty = all sidebar folders.
     public var folders: [String]
+    /// Smart collections saved before rules existed; converted by `effectiveRules`.
     public var criteria: SearchCriteria
+    /// A smart collection's conditions.
+    public var rules: SmartRules?
     public var created: Date
 
     public init(id: UUID = UUID(), name: String, kind: Kind, items: [String] = [], folders: [String] = [],
-                criteria: SearchCriteria = SearchCriteria(), created: Date = Date()) {
+                criteria: SearchCriteria = SearchCriteria(), rules: SmartRules? = nil, created: Date = Date()) {
         self.id = id
         self.name = name
         self.kind = kind
         self.items = items
         self.folders = folders
         self.criteria = criteria
+        self.rules = rules
         // Whole seconds, so the value survives an ISO-8601 round trip unchanged.
         self.created = Date(timeIntervalSince1970: created.timeIntervalSince1970.rounded(.down))
     }
 
     public var itemURLs: [URL] { items.map(PortablePath.url) }
+
+    /// The smart collection's rules (older collections: their saved search, as rules).
+    public var effectiveRules: SmartRules {
+        if let rules { return rules }
+        var converted = SmartRules(criteria: criteria)
+        converted.matchAll = true
+        return converted
+    }
     public var folderURLs: [URL] { folders.map(PortablePath.url) }
 
     public mutating func add(_ urls: [URL]) {

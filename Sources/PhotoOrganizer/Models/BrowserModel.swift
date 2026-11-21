@@ -15,11 +15,18 @@ enum PhotoSortOrder: String, CaseIterable, Identifiable {
 enum BrowseSource: Hashable {
     case folder(URL)
     case collection(UUID)
-    /// The photos of the running or most recent import, as they land.
-    case lastImport
+    /// One import (an entry under Collections → Imports); the running one fills in as files land.
+    case importSession(UUID)
 }
 
 /// Files in one folder that share a base name (a RAW+JPEG pair), shown as one stack in the grid.
+/// Opens the smart-collection editor (for a new collection or an existing one).
+struct SmartEditorRequest: Identifiable {
+    let id = UUID()
+    var collection: PhotoCollection
+    var isNew: Bool
+}
+
 struct StackInfo: Hashable {
     let key: String
     /// Position in the stack; 0 is the top (the RAW file, if there is one).
@@ -43,7 +50,6 @@ struct GridEntry: Identifiable, Hashable {
 struct NamePrompt: Identifiable {
     enum Purpose {
         case newCollection(adding: [URL])
-        case saveSmartCollection
         case renameCollection(UUID)
         case newFolder(in: URL)
     }
@@ -55,7 +61,6 @@ struct NamePrompt: Identifiable {
     var title: String {
         switch purpose {
         case .newCollection: "New Collection"
-        case .saveSmartCollection: "Save as Smart Collection"
         case .renameCollection: "Rename Collection"
         case .newFolder: "New Folder"
         }
@@ -64,7 +69,6 @@ struct NamePrompt: Identifiable {
     var actionTitle: String {
         switch purpose {
         case .renameCollection: "Rename"
-        case .saveSmartCollection: "Save"
         default: "Create"
         }
     }
@@ -74,6 +78,14 @@ struct NamePrompt: Identifiable {
 struct FileRequest: Identifiable {
     let id = UUID()
     let urls: [URL]
+}
+
+/// Unpicking (or rejecting) a pick would move the exports made from it in `Picked/` to the Trash:
+/// shown for confirmation first.
+struct CullCleanupRequest: Identifiable {
+    let id = UUID()
+    let files: [URL]
+    let confirm: @MainActor () -> Void
 }
 
 /// A lazily expanded node in the sidebar folder tree.
@@ -117,6 +129,12 @@ final class BrowserModel {
     private(set) var source: BrowseSource?
     private(set) var photos: [PhotoFile] = [] { didSet { refilter() } }
     private(set) var tags: [URL: PhotoTags] = [:] { didSet { refilter() } }
+    /// EXIF and import dates for smart-collection rules; loaded only when the open collection's
+    /// rules need them.
+    private(set) var ruleInfo: [URL: RuleInfo] = [:] { didSet { refilter() } }
+    /// Camera and lens of photos already read, so the smart-collection editor's lists open fast
+    /// the second time.
+    @ObservationIgnored private var gearCache: [URL: GearInfo] = [:]
     /// `photos` after filtering and sorting. Cached because many views read it.
     private(set) var visiblePhotos: [PhotoFile] = []
     /// What the grid shows: `visiblePhotos` with same-name files grouped into stacks.
@@ -165,8 +183,10 @@ final class BrowserModel {
 
     // Presentation requests (sheets / confirmations), triggered from menus anywhere in the UI.
     var namePrompt: NamePrompt?
+    var smartEditor: SmartEditorRequest?
     var renameRequest: FileRequest?
     var trashRequest: FileRequest?
+    var cullCleanupRequest: CullCleanupRequest?
 
     /// Full-window review (loupe, or side-by-side compare of `compareURLs`).
     var isReviewing = false
@@ -201,19 +221,29 @@ final class BrowserModel {
         switch source {
         case .folder(let url): FileManager.default.displayName(atPath: url.path)
         case .collection: currentCollection?.name ?? "Collection"
-        case .lastImport: "Last Import"
+        case .importSession(let id): dataFolder.importSession(id).map { "Import · " + $0.started.formatted(date: .abbreviated, time: .shortened) } ?? "Import"
         case nil: "Photo Organizer"
         }
     }
 
-    /// For a smart collection: whether the live filters differ from what's saved.
-    var hasUnsavedSmartChanges: Bool {
-        guard let collection = currentCollection, collection.kind == .smart else { return false }
-        return collection.criteria != criteria
+    /// The open smart collection's rules, if a smart collection is open.
+    var smartRules: SmartRules? {
+        guard let collection = currentCollection, collection.kind == .smart else { return nil }
+        return collection.effectiveRules
     }
 
     private func refilter() {
-        let matching = photos.filter { criteria.matches(name: $0.name, tags: tags[$0.url] ?? .empty) }
+        let rules = smartRules
+        let matching = photos.filter { photo in
+            let photoTags = tags[photo.url] ?? .empty
+            if let rules {
+                let info = ruleInfo[photo.url]
+                let facts = PhotoFacts(url: photo.url, tags: photoTags, captureDate: info?.captureDate,
+                                       importDate: info?.importDate, camera: info?.camera, lens: info?.lens)
+                guard rules.matches(facts) else { return false }
+            }
+            return criteria.matches(name: photo.name, tags: photoTags)
+        }
         visiblePhotos = matching.sorted { sortAscending ? precedes($0, $1) : precedes($1, $0) }
         rebuildGrid()
     }
@@ -349,17 +379,13 @@ final class BrowserModel {
 
     func open(_ newSource: BrowseSource) {
         guard newSource != source else { return }
-        let wasSmart = currentCollection?.kind == .smart
         source = newSource
         if case .folder(let url) = newSource {
             UserDefaults.standard.set(url.path, forKey: Keys.lastFolder)
         }
-        // A smart collection *is* its criteria: load them into the filter bar for viewing/editing.
-        if let collection = currentCollection, collection.kind == .smart {
-            criteria = collection.criteria
-        } else if wasSmart {
-            criteria = SearchCriteria()
-        }
+        // A smart collection has its own rules; start it without leftover filter-bar filters.
+        if currentCollection?.kind == .smart { criteria = SearchCriteria() }
+        ruleInfo = [:]
         selection = []
         focused = nil
         anchor = nil
@@ -401,6 +427,20 @@ final class BrowserModel {
                     for (url, t) in loaded { loadedTags[url] = t }
                     if loadedTags != tags { tags = loadedTags }
                 }
+                // Smart-collection rules on camera / lens / dates: read what they need.
+                if let rules = smartRules, rules.needsMetadata || rules.usesImportDate {
+                    let readEXIF = rules.needsMetadata
+                    let importDates = ImportLog.importDates(dataFolder.importSessions)
+                    var loadedInfo = ruleInfo
+                    for chunk in found.chunked(into: 250) {
+                        let loaded = await Task.detached(priority: .utility) {
+                            chunk.map { photo in (photo.url, RuleInfo.read(photo.url, exif: readEXIF, importDates: importDates)) }
+                        }.value
+                        guard !Task.isCancelled else { return }
+                        for (url, info) in loaded { loadedInfo[url] = info }
+                        ruleInfo = loadedInfo
+                    }
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 photos = []
@@ -422,15 +462,15 @@ final class BrowserModel {
                 let items = collection.itemURLs
                 return { FolderScanner.photoFiles(items) }
             case .smart:
-                let scope = collection.folderURLs.isEmpty ? rootNodes.map(\.url) : collection.folderURLs
+                let scope = smartScope
                 return {
                     var seen = Set<URL>()
                     return scope.flatMap { (try? FolderScanner.photos(in: $0, recursive: true)) ?? [] }
                         .filter { seen.insert($0.url).inserted }
                 }
             }
-        case .lastImport:
-            let urls = lastImportURLs
+        case .importSession(let id):
+            let urls = id == liveImportID ? liveImportURLs : dataFolder.importSession(id)?.fileURLs ?? []
             return { FolderScanner.photoFiles(urls) }
         }
     }
@@ -443,12 +483,12 @@ final class BrowserModel {
         case .folder(let url):
             paths = [url]
             recursive = includeSubfolders
-        case .lastImport:
-            return  // updated by the import as files land
+        case .importSession:
+            return  // fixed sets of files
         case .collection:
             guard let collection = currentCollection else { return }
             switch collection.kind {
-            case .smart: paths = collection.folderURLs.isEmpty ? rootNodes.map(\.url) : collection.folderURLs
+            case .smart: paths = smartScope
             case .manual: paths = Array(Set(collection.itemURLs.map { $0.deletingLastPathComponent() }))
             }
         case nil:
@@ -469,41 +509,65 @@ final class BrowserModel {
         reload()
     }
 
-    // MARK: - Last Import
+    // MARK: - Running import
 
-    /// Files of the running or most recent import, in import order (in memory only).
-    private(set) var lastImportURLs: [URL] = []
-    @ObservationIgnored private var lastImportReloadPending = false
+    /// The import being copied right now, and its files so far (in import order).
+    private(set) var liveImportID: UUID?
+    private(set) var liveImportURLs: [URL] = []
+    @ObservationIgnored private var liveImportReloadPending = false
 
-    /// Shows "Last Import", empty, as an import starts; photos appear as they're copied.
-    func beginLastImport() {
-        lastImportURLs = []
-        if source == .lastImport {
-            photos = []
-            tags = [:]
-            selection = []
-            reload()
-        } else {
-            open(.lastImport)
-        }
+    private var isShowingLiveImport: Bool {
+        guard let liveImportID else { return false }
+        return source == .importSession(liveImportID)
     }
 
-    func appendToLastImport(_ url: URL) {
-        lastImportURLs.append(url)
-        // Refresh the grid at most a couple of times a second while copying.
-        guard source == .lastImport, !lastImportReloadPending else { return }
-        lastImportReloadPending = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+    /// Shows the new import (empty) as it starts; photos appear as they're copied.
+    func beginImport(_ id: UUID) {
+        liveImportID = id
+        liveImportURLs = []
+        // Select the new entry once the sidebar has added it: selecting a List row in the same
+        // update that inserts it leaves a stale copy of the row drawn behind (SwiftUI List bug).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             MainActor.assumeIsolated {
-                self?.lastImportReloadPending = false
-                if self?.source == .lastImport { self?.reload() }
+                guard let self, self.liveImportID == id else { return }
+                self.open(.importSession(id))
             }
         }
     }
 
-    func finishLastImport() {
+    func appendToImport(_ url: URL) {
+        liveImportURLs.append(url)
+        // Refresh the grid at most a couple of times a second while copying.
+        guard isShowingLiveImport, !liveImportReloadPending else { return }
+        liveImportReloadPending = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            MainActor.assumeIsolated {
+                self?.liveImportReloadPending = false
+                if self?.isShowingLiveImport == true { self?.reload() }
+            }
+        }
+    }
+
+    /// The import is saved in the import log by now; show it from there.
+    func finishImport() {
+        let wasShowing = isShowingLiveImport
+        let id = liveImportID
+        liveImportID = nil
+        liveImportURLs = []
         refreshSidebar()
-        if source == .lastImport { reload() }
+        if wasShowing {
+            if let id, dataFolder.importSession(id) != nil { reload() } else { close() }
+        }
+    }
+
+    /// Shows nothing (after the open collection or import is removed).
+    func close() {
+        source = nil
+        photos = []
+        tags = [:]
+        selection = []
+        focused = nil
+        criteria = SearchCriteria()
     }
 
     // MARK: - Sidebar folders
@@ -709,8 +773,18 @@ final class BrowserModel {
         updateTags(urls) { $0[field] = value }
     }
 
-    private func updateTags(_ urls: [URL], advance: Bool = false, _ change: (inout PhotoTags) -> Void) {
+    private func updateTags(_ urls: [URL], advance: Bool = false, cleanupConfirmed: Bool = false,
+                            _ change: @escaping (inout PhotoTags) -> Void) {
         guard !urls.isEmpty else { return }
+        // Photos in a day's Imported / Picked / Rejected move to the folder for their new flag.
+        let cull = cullChanges(urls, change)
+        let extras = cull.filter { $0.before == .picked && $0.after != .picked }.flatMap(\.exports)
+        if !extras.isEmpty && !cleanupConfirmed {
+            cullCleanupRequest = CullCleanupRequest(files: extras) { [weak self] in
+                self?.updateTags(urls, advance: advance, cleanupConfirmed: true, change)
+            }
+            return
+        }
         let visibleBefore = displayedPhotos.map(\.url)
         let focusIndex = focused.flatMap { visibleBefore.firstIndex(of: $0) }
 
@@ -724,6 +798,16 @@ final class BrowserModel {
             }
         }
         tags = updated
+        var moves: [URL: URL] = [:]
+        for change in cull where change.before != change.after {
+            let moved = CullFolders.move(change.originals, to: change.after)
+            moves.merge(moved.completed) { $1 }
+            failures += moved.failures
+        }
+        if !extras.isEmpty {
+            failures += FileOperations.trash(extras).failures
+        }
+        applyMoves(moves)
         if !failures.isEmpty {
             errorMessage = "Couldn't save tags.\n" + failures.joined(separator: "\n")
         }
@@ -738,6 +822,62 @@ final class BrowserModel {
         }
     }
 
+    private typealias CullChange = (originals: [URL], exports: [URL], before: CullFolders.State, after: CullFolders.State)
+
+    /// For photos in a day's Imported / Picked / Rejected folder: each pair's cull state before and
+    /// after `change`, and the exports made from it (photos no import brought in).
+    private func cullChanges(_ urls: [URL], _ change: (inout PhotoTags) -> Void) -> [CullChange] {
+        let changing = Set(urls)
+        let imported = Set(ImportLog.importDates(dataFolder.importSessions).keys)
+        let isOriginal = { (url: URL) in imported.contains(PortablePath.string(url).lowercased()) }
+        var seen = Set<String>()
+        var result: [CullChange] = []
+        for url in urls where CullFolders.dayFolder(of: url) != nil {
+            let key = url.deletingPathExtension().path.lowercased()
+            guard seen.insert(key).inserted else { continue }
+            let group = CullFolders.group(of: url, isOriginal: isOriginal)
+            let current = group.originals.map { tags[$0] ?? tagStore.tags(for: $0) }
+            let changed = zip(group.originals, current).map { member, memberTags in
+                var copy = memberTags
+                if changing.contains(member) { change(&copy) }
+                return copy
+            }
+            result.append((group.originals, group.exports, CullFolders.State(group: current), CullFolders.State(group: changed)))
+        }
+        return result
+    }
+
+    /// After photos moved (e.g. into Picked): collections and the import list follow them, and the
+    /// grid shows them at their new place, or drops them if this folder no longer contains them.
+    /// (The folder watcher reloads afterwards.)
+    private func applyMoves(_ moves: [URL: URL]) {
+        guard !moves.isEmpty else { return }
+        dataFolder.relocate(moves)
+        if liveImportID != nil { liveImportURLs = liveImportURLs.map { moves[$0] ?? $0 } }
+        func stillShown(_ url: URL) -> Bool {
+            guard case .folder(let folder) = source else { return true }
+            let parent = url.deletingLastPathComponent().standardizedFileURL.path
+            let shown = folder.standardizedFileURL.path
+            return parent == shown || (includeSubfolders && parent.hasPrefix(shown + "/"))
+        }
+        var movedTags = tags
+        var movedInfo = ruleInfo
+        for (old, new) in moves {
+            if let t = movedTags.removeValue(forKey: old) { movedTags[new] = t }
+            if let info = movedInfo.removeValue(forKey: old) { movedInfo[new] = info }
+        }
+        photos = photos.compactMap { photo in
+            guard let new = moves[photo.url] else { return photo }
+            return stillShown(new) ? PhotoFile(url: new, fileSize: photo.fileSize, modified: photo.modified,
+                                               contentType: photo.contentType) : nil
+        }
+        tags = movedTags
+        ruleInfo = movedInfo
+        selection = Set(selection.map { moves[$0] ?? $0 })
+        focused = focused.map { moves[$0] ?? $0 }
+        anchor = anchor.map { moves[$0] ?? $0 }
+    }
+
     // MARK: - Collections
 
     func submitNamePrompt(_ prompt: NamePrompt, name rawName: String) {
@@ -745,7 +885,6 @@ final class BrowserModel {
         guard !name.isEmpty else { return }
         switch prompt.purpose {
         case .newCollection(let urls): createCollection(named: name, adding: urls)
-        case .saveSmartCollection: saveSearchAsSmartCollection(named: name)
         case .renameCollection(let id): renameCollection(id, to: name)
         case .newFolder(let parent): createFolder(named: name, in: parent)
         }
@@ -757,17 +896,85 @@ final class BrowserModel {
         dataFolder.save(collection)
     }
 
-    func saveSearchAsSmartCollection(named name: String) {
-        var folders: [String] = []
-        if let folder = currentFolder { folders = [PortablePath.string(folder)] }
-        let collection = PhotoCollection(name: name, kind: .smart, folders: folders, criteria: criteria)
-        if dataFolder.save(collection) { open(.collection(collection.id)) }
+    /// A new smart collection. Smart collections search every photo in the data folder.
+    func newSmartCollection(rules: SmartRules = SmartRules(rules: [SmartRule(field: .keyword)])) {
+        let collection = PhotoCollection(name: "", kind: .smart, rules: rules)
+        smartEditor = SmartEditorRequest(collection: collection, isNew: true)
     }
 
-    func saveSmartCollectionChanges() {
-        guard var collection = currentCollection, collection.kind == .smart else { return }
-        collection.criteria = criteria
-        dataFolder.save(collection)
+    /// The filter bar's current search as the starting rules of a new smart collection.
+    func saveSearchAsSmartCollection() {
+        newSmartCollection(rules: SmartRules(criteria: criteria))
+    }
+
+    /// Where smart collections look: the data folder and every sidebar folder this Mac can read,
+    /// without folders that are inside another one (they'd be scanned twice).
+    var smartScope: [URL] {
+        let candidates = [dataFolder.url] + rootNodes.filter(\.isAccessible).map(\.url)
+        let paths = candidates.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        func inside(_ child: URL, _ parent: URL) -> Bool {
+            child.path.lowercased().hasPrefix(parent.path.lowercased() + "/")
+        }
+        var scope: [URL] = []
+        for (index, url) in paths.enumerated() {
+            let covered = paths.enumerated().contains { other in
+                other.offset != index && (inside(url, other.element)
+                    || (other.offset < index && other.element.path.caseInsensitiveCompare(url.path) == .orderedSame))
+            }
+            if !covered { scope.append(candidates[index]) }
+        }
+        return scope
+    }
+
+    /// Every camera, lens and keyword used by the photos in the data folder and sidebar folders (keywords also from
+    /// Keywords.txt), for the smart-collection editor's menus.
+    func smartRuleChoices() async -> RuleChoices {
+        let scope = smartScope
+        let known = gearCache
+        let store = tagStore
+        let (gear, photoKeywords) = await Task.detached(priority: .userInitiated) { () -> ([URL: GearInfo], Set<String>) in
+            var gear: [URL: GearInfo] = [:]
+            var keywords = Set<String>()
+            let photos = scope.flatMap { (try? FolderScanner.photos(in: $0, recursive: true)) ?? [] }
+            for photo in photos {
+                if let cached = known[photo.url] {
+                    gear[photo.url] = cached
+                } else {
+                    let info = MetadataReader.ruleInfo(of: photo.url)
+                    gear[photo.url] = GearInfo(camera: info.camera, lens: info.lens)
+                }
+                keywords.formUnion(store.tags(for: photo.url).keywords)   // sidecars change: always read
+            }
+            return (gear, keywords)
+        }.value
+        gearCache.merge(gear) { $1 }
+        func sorted(_ values: some Sequence<String>) -> [String] {
+            Set(values.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        }
+        return RuleChoices(cameras: sorted(gear.values.compactMap(\.camera)),
+                           lenses: sorted(gear.values.compactMap(\.lens)),
+                           keywords: RuleChoices.unique(photoKeywords.union(dataFolder.keywords.paths)))
+    }
+
+    func editSmartCollection(_ id: UUID) {
+        guard var collection = dataFolder.collection(id), collection.kind == .smart else { return }
+        collection.rules = collection.effectiveRules   // convert an older saved search once
+        smartEditor = SmartEditorRequest(collection: collection, isNew: false)
+    }
+
+    func saveSmartCollection(_ collection: PhotoCollection) {
+        var collection = collection
+        collection.criteria = SearchCriteria()          // rules replace the old saved search
+        guard dataFolder.save(collection) else { return }
+        if source == .collection(collection.id) {
+            ruleInfo = [:]
+            restartWatching()
+            reload()
+        } else {
+            criteria = SearchCriteria()
+            open(.collection(collection.id))
+        }
     }
 
     func renameCollection(_ id: UUID, to name: String) {
@@ -883,5 +1090,49 @@ final class BrowserModel {
 private extension Array {
     func chunked(into size: Int) -> [ArraySlice<Element>] {
         stride(from: 0, to: count, by: size).map { self[$0..<Swift.min($0 + size, count)] }
+    }
+}
+
+/// What smart-collection rules need beyond tags: EXIF and the import date.
+struct RuleInfo: Sendable {
+    var captureDate: Date?
+    var camera: String?
+    var lens: String?
+    var importDate: Date?
+
+    static func read(_ url: URL, exif: Bool, importDates: [String: Date]) -> RuleInfo {
+        var info = RuleInfo()
+        if exif {
+            let read = MetadataReader.ruleInfo(of: url)
+            info.captureDate = read.date
+            info.camera = read.camera
+            info.lens = read.lens
+        }
+        // Imported by the app: the import's date; otherwise when the file was added to its folder.
+        info.importDate = importDates[PortablePath.string(url).lowercased()] ?? ImportLog.dateAdded(url)
+        return info
+    }
+}
+
+struct GearInfo: Sendable {
+    var camera: String?
+    var lens: String?
+}
+
+/// What the smart-collection editor offers in its menus: the cameras, lenses and keywords in the
+/// data folder.
+struct RuleChoices: Equatable, Sendable {
+    var cameras: [String] = []
+    var lenses: [String] = []
+    /// Keywords, each once (ignoring case), alphabetical.
+    var keywords: [String] = []
+
+    static func unique(_ keywords: some Sequence<String>) -> [String] {
+        var all: [String: String] = [:]   // lower-cased → as written (first spelling wins)
+        for keyword in keywords {
+            let trimmed = keyword.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty, all[trimmed.lowercased()] == nil { all[trimmed.lowercased()] = trimmed }
+        }
+        return all.values.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 }

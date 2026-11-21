@@ -237,7 +237,7 @@ private struct ImportOptions: View {
         Form {
             Section("Destination") {
                 LabeledContent("Folders") {
-                    Text("images/YYYY/yyyy-MM-dd").font(.callout.monospaced())
+                    Text("images/YYYY/yyyy-MM-dd/Imported").font(.callout.monospaced())
                 }
                 Text(PortablePath.string(model.imagesRoot))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)

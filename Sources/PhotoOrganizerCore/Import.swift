@@ -76,7 +76,7 @@ public struct ImportSettings: Codable, Equatable, Sendable {
 
 // MARK: - Layout
 
-/// Where imported photos go: `<data folder>/images/YYYY/yyyy-MM-dd/<name>`.
+/// Where imported photos go: `<data folder>/images/YYYY/yyyy-MM-dd/Imported/<name>` (see `CullFolders`).
 public enum ImportLayout {
     public static let rootFolderName = "images"
 
@@ -89,6 +89,11 @@ public enum ImportLayout {
         let year = formatter.string(from: date)
         formatter.dateFormat = "yyyy-MM-dd"
         return "\(year)/\(formatter.string(from: date))"
+    }
+
+    /// "2026/2026-11-19/Imported": where an import puts the photos of that day.
+    public static func destinationFolder(for date: Date) -> String {
+        relativeFolder(for: date) + "/" + CullFolders.imported
     }
 
     /// File names never contain spaces: every run of whitespace becomes one "_".
@@ -140,20 +145,35 @@ public enum ImportScanner {
                             : FolderScanner.photoFiles([source])
         }
         .filter { seen.insert($0.url).inserted }
-        var results = [ImportCandidate?](repeating: nil, count: files.count)
-        let lock = NSLock()
+        let results = CandidateSlots(count: files.count)
         DispatchQueue.concurrentPerform(iterations: files.count) { index in
             if isCancelled() { return }
             let file = files[index]
             let info = MetadataReader.importInfo(of: file.url)
-            let candidate = ImportCandidate(url: file.url, size: file.fileSize,
-                                            captureDate: info.date ?? file.modified, camera: info.camera)
-            lock.lock(); results[index] = candidate; lock.unlock()
+            results.set(index, ImportCandidate(url: file.url, size: file.fileSize,
+                                               captureDate: info.date ?? file.modified, camera: info.camera))
         }
-        return results.compactMap { $0 }.sorted {
+        return results.all.sorted {
             $0.captureDate == $1.captureDate ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
                                              : $0.captureDate < $1.captureDate
         }
+    }
+}
+
+/// Results written from `concurrentPerform`, one slot per file, guarded by a lock.
+private final class CandidateSlots: @unchecked Sendable {
+    private var slots: [ImportCandidate?]
+    private let lock = NSLock()
+
+    init(count: Int) { slots = Array(repeating: nil, count: count) }
+
+    func set(_ index: Int, _ candidate: ImportCandidate) {
+        lock.lock(); slots[index] = candidate; lock.unlock()
+    }
+
+    var all: [ImportCandidate] {
+        lock.lock(); defer { lock.unlock() }
+        return slots.compactMap { $0 }
     }
 }
 
@@ -220,13 +240,14 @@ public struct ImportPlan: Sendable {
         }
         groups = sorted.enumerated().map { index, members in
             let date = members.map(\.captureDate).min()!
-            let folder = ImportLayout.relativeFolder(for: date)
+            let folder = ImportLayout.destinationFolder(for: date)
+            let day = ImportLayout.relativeFolder(for: date)
             let original = members[0].url.deletingPathExtension().lastPathComponent
             var base = original
             if settings.renameFiles {
                 let context = RenamePlan.Context(name: original, number: startNumber + index, date: date,
                                                  camera: members.first { $0.camera != nil }?.camera ?? "",
-                                                 folder: String(folder.split(separator: "/").last ?? ""))
+                                                 folder: String(day.split(separator: "/").last ?? ""))
                 base = RenamePlan.expand(settings.nameTemplate, context)
             }
             base = ImportLayout.noSpaces(RenamePlan.sanitize(base))

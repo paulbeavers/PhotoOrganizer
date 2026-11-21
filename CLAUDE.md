@@ -64,12 +64,27 @@ app. Both should finish with no errors or warnings.
 - **Never put spaces in file or folder names the app creates.** `RenamePlan.sanitize` and
   `ImportLayout.noSpaces` turn whitespace into "_" (renames, imports, new folders, collection files).
 - **Import** (`PhotoOrganizerCore/Import.swift`, `Models/ImportModel.swift`, `Views/ImportView.swift`):
-  destination is always `<data folder>/images/YYYY/yyyy-MM-dd/` by capture date (`ImportLayout`).
+  destination is always `<data folder>/images/YYYY/yyyy-MM-dd/Imported/` by capture date (`ImportLayout`).
+- **Cull folders** (`PhotoOrganizerCore/CullFolders.swift`): picking / rejecting / unflagging a photo
+  in a day's `Imported/`, `Picked/` or `Rejected/` *moves* it (pair together, via `FileOperations.move`,
+  so sidecars and editor files travel) to the folder for its new state. Not symlinks: NX Studio
+  ignores them. Not hard links: a synced data folder turns them into copies. The sidecar's flag is
+  the record; `BrowserModel.updateTags` does the moves (`cullChanges`, `applyMoves`), and
+  `DataFolderModel.relocate` keeps collections and the import log pointing at the files. Originals
+  are the files in the import log; other same-name photos in `Picked/` are exports, which never
+  move, and unpicking confirms before trashing them.
   `ImportPlan` groups same-name files so pairs share a new name; `Importer.run` copies with
   SHA-256 verification (re-read with F_NOCACHE), copies sidecars/editor files, writes import tags,
   then mirrors to the backup folder. `ImportHistory.json` (data folder) marks shots already imported.
-  Import options live in `SharedSettings.importOptions`. The browser's `.lastImport` source shows
-  files as they land.
+  Import options live in `SharedSettings.importOptions`. The running import is saved to the import log
+  at the start and shown as `.importSession(id)`, filling from `liveImportURLs` as files land.
+- **Smart collections** (`PhotoOrganizerCore/SmartRules.swift`): `PhotoCollection.rules` (match all/any
+  of `SmartRule`s); older collections' `criteria` are converted by `effectiveRules`. The browser
+  applies rules live in `refilter()`; EXIF (camera/lens/capture date) and import dates are read into
+  `ruleInfo` only when the open collection's rules need them. Editor: `Views/SmartCollectionEditor.swift`.
+- **Import log** (`ImportLog.swift`): one `Imports/<yyyy-MM-dd_HH-mm-ss>_<id>.json` per import
+  (shown under Collections → Imports, `BrowseSource.importSession`); imports from before the log
+  are rebuilt once from `ImportHistory.json` by file creation time.
 - Other editors' per-photo settings files (`CompanionFileType`: NX Studio `NKSC_PARAM/<file>.nksc`,
   RawTherapee `<file>.pp3`, DxO `<file>.dop`) must travel with their photo in every file operation.
   Any new file operation must handle them too (see `FileOperations`). For safety, a settings file is

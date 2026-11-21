@@ -13,16 +13,21 @@ database or catalog.
   drives, and your home folder as a Finder-style tree: click a folder to import from it (with its
   subfolders, unless you turn that off). The window opens by itself when a card is inserted. Photos are listed by capture day, and ones imported before are greyed out and
   unchecked, even if they were imported on another Mac that shares the data folder.
-- **Organized automatically** into the data folder: `images/YYYY/yyyy-MM-dd/`, by capture date
-  (for example `images/2026/2026-11-19/`). File names never contain spaces.
+- **Organized automatically** into the data folder: `images/YYYY/yyyy-MM-dd/Imported/`, by capture
+  date (for example `images/2026/2026-11-19/Imported/`). File names never contain spaces.
+- **Picked and Rejected folders:** picking a photo moves it (with its sidecar and editor edits)
+  from the day's `Imported/` folder to `Picked/`, rejecting moves it to `Rejected/`, unflagging
+  moves it back. Point NX Studio, Photoshop or any other editor at `Picked/` and you only see the
+  keepers. A RAW+JPEG pair moves together. Exports made in `Picked/` stay there; unpicking asks
+  before moving them to the Trash. Collections and the Imports list follow the photos.
 - **Keep the camera's names or rename** with a template (`{date:yyyyMMdd}_{n:4}`…); RAW+JPEG
   pairs keep matching names.
 - **RAW + JPEG, RAW only or JPEG only.**
 - **Creator, copyright and keywords** added to every photo's sidecar as it arrives.
 - **Verified copies:** every copy is re-read from disk and compared with the original by
   checksum. An optional **backup copy** goes to a second folder or drive in the same layout.
-- **Cull while it copies:** the grid switches to *Last Import* and fills up as files land; progress
-  and Cancel are in the sidebar. The card is ejected when the import finishes.
+- **Cull while it copies:** the import appears at the top of Collections → Imports and the grid
+  fills up as files land; progress and Cancel are on its entry. The card is ejected when the import finishes.
 
 **Browsing**
 - **Stacks.** Files with the same name in one folder (`DSC_0001.NEF` + `DSC_0001.JPG`) show as one
@@ -57,9 +62,14 @@ database or catalog.
 
 **Collections and saved searches**
 - **Manual collections**: drag photos onto a collection in the sidebar, or use *Add to Collection*.
-- **Smart collections**: set up filters (search text, rating, label, flag, keywords), then click
-  *Save as Smart Collection…*. Opening one loads its filters into the filter bar, where they can be
-  adjusted and saved again.
+- **Smart collections** fill themselves from rules (File → New Smart Collection…, ⇧⌥⌘N). Match
+  all or any of: keyword, rating, flag, label, file name, title, caption, creator, copyright,
+  location, any text, file type (RAW, JPEG, HEIC…), camera, lens, capture date and import date
+  ("in the last 7 days", on / before / after a date), searching every photo in the data folder and the sidebar folders.
+  Camera and lens rules list the cameras and lenses found in your photos. The filter bar's *Save as Smart Collection…* starts one from the
+  current search; right-click → *Edit Smart Collection…* changes it.
+- **Imports**: every import is listed under Collections → Imports with its date, time, source and
+  photo count, newest first.
 
 **File operations** (sidecars and editor settings files always travel with their photos)
 - **Move / Copy To** a sidebar folder or any folder (⇧⌘M / ⇧⌘C). You can also drag photos onto a
@@ -135,9 +145,13 @@ Dropbox, a NAS) and every Mac gets the same sidebar, editors, preferences, colle
 keywords.
 
 ```
-images/YYYY/yyyy-MM-dd/   imported photos (and their sidecars), by capture date
+images/YYYY/yyyy-MM-dd/   one folder per capture day:
+  Imported/               photos not culled yet, with their sidecars and edit files
+  Picked/                 the picks (moved here), plus exports made here
+  Rejected/               the rejects
 Settings.json             sidebar folders, external editors, appearance, import options, preferences
-Collections/<Name>.json   one file per collection
+Collections/<Name>.json   one file per collection (manual or smart, with its rules)
+Imports/<date>.json       one file per import: when, from where, which photos
 Keywords.txt              keyword list in the tab-indented Lightroom/Bridge import/export format
 ImportHistory.json        which shots were imported, so cards aren't imported twice
 ```

@@ -26,7 +26,7 @@ final class CancelFlag: @unchecked Sendable {
 
 /// The import window and the import running behind it.
 ///
-/// Photos are copied into `<data folder>/images/YYYY/yyyy-MM-dd/` (see `ImportLayout`), verified,
+/// Photos are copied into `<data folder>/images/YYYY/yyyy-MM-dd/Imported/` (see `ImportLayout`), verified,
 /// optionally backed up and tagged. The window closes as soon as an import starts; the grid shows
 /// "Last Import" filling up, so culling can begin while files are still copying.
 @MainActor
@@ -48,7 +48,12 @@ final class ImportModel {
     private(set) var isImporting = false
     private(set) var progress = ImportProgress()
     /// One line about the last finished import, for the sidebar.
+    /// How the most recent import went ("Imported 5 photos · card ejected"), shown on its entry.
     private(set) var lastSummary: String?
+    /// The running import's entry under Imports.
+    private(set) var runningSessionID: UUID?
+    /// The entry `lastSummary` belongs to.
+    private(set) var lastSessionID: UUID?
 
     @ObservationIgnored private var cancelFlag = CancelFlag()
     @ObservationIgnored private var scanCancel = CancelFlag()
@@ -192,7 +197,7 @@ final class ImportModel {
                     if history[candidate.historyKey] != nil { return true }
                     // Copied before without the history (e.g. by hand): same name and size in its day folder.
                     guard keepNames else { return false }
-                    let target = imagesRoot.appendingPathComponent(ImportLayout.relativeFolder(for: candidate.captureDate))
+                    let target = imagesRoot.appendingPathComponent(ImportLayout.destinationFolder(for: candidate.captureDate))
                         .appendingPathComponent(ImportLayout.noSpaces(candidate.name))
                     let size = (try? FileManager.default.attributesOfItem(atPath: target.path))?[.size] as? Int
                     return size == candidate.size
@@ -262,11 +267,16 @@ final class ImportModel {
         cancelFlag = flag
         let ejectURL = (source?.isVolume == true && settings.ejectWhenDone) ? source?.url : nil
         let isFirstImport = !FileManager.default.fileExists(atPath: imagesRoot.path)
+        let session = ImportSession(started: Date(), source: source?.name ?? "Import")
         isImporting = true
         progress = ImportProgress(filesTotal: plan.fileCount, bytesTotal: plan.byteCount)
         lastSummary = nil
         isPresented = false
-        browser.beginLastImport()
+        // The import is listed under Imports right away; its photos appear as they're copied.
+        dataFolder.saveImportSession(session)
+        runningSessionID = session.id
+        lastSessionID = session.id
+        browser.beginImport(session.id)
 
         Task {
             let result = await Task.detached(priority: .userInitiated) {
@@ -274,7 +284,7 @@ final class ImportModel {
                     Task { @MainActor in self.fileImported(url, progress: progress) }
                 }
             }.value
-            finish(result, ejectURL: ejectURL, isFirstImport: isFirstImport)
+            finish(result, session: session, ejectURL: ejectURL, isFirstImport: isFirstImport)
         }
     }
 
@@ -284,11 +294,21 @@ final class ImportModel {
 
     private func fileImported(_ url: URL, progress: ImportProgress) {
         self.progress = progress
-        if FileManager.default.fileExists(atPath: url.path) { browser.appendToLastImport(url) }
+        if FileManager.default.fileExists(atPath: url.path) { browser.appendToImport(url) }
     }
 
-    private func finish(_ result: ImportResult, ejectURL: URL?, isFirstImport: Bool) {
+    private func finish(_ result: ImportResult, session: ImportSession, ejectURL: URL?, isFirstImport: Bool) {
         isImporting = false
+        runningSessionID = nil
+        // Record what the import brought in; an import that copied nothing isn't kept.
+        if result.imported.isEmpty {
+            dataFolder.removeImportSession(session)
+        } else {
+            var session = session
+            session.finished = Date()
+            session.files = result.imported.map(PortablePath.string)
+            dataFolder.saveImportSession(session)
+        }
         do {
             try ImportHistory(dataFolder: dataFolder.url).record(result.history)
         } catch {
@@ -299,7 +319,7 @@ final class ImportModel {
         if isFirstImport, FileManager.default.fileExists(atPath: imagesRoot.path), !browser.isRoot(imagesRoot) {
             browser.addRootFolders([imagesRoot])
         }
-        browser.finishLastImport()
+        browser.finishImport()
 
         let count = result.imported.count
         var summary = "Imported \(count) photo\(count == 1 ? "" : "s")"

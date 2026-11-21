@@ -50,13 +50,17 @@ public enum FolderScanner {
             urls = try FileManager.default.contentsOfDirectory(
                 at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
         }
+        var seen = Set<URL>()
         return photoFiles(urls)
+            .filter { seen.insert($0.url).inserted }   // a photo and a link to it: once
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// `PhotoFile`s for the given URLs that exist and are images (order preserved).
+    /// `PhotoFile`s for the given URLs that exist and are images (order preserved). A symbolic link
+    /// (e.g. in a day's `Picked` folder) stands for the photo it points to.
     public static func photoFiles(_ urls: [URL]) -> [PhotoFile] {
-        urls.compactMap { url -> PhotoFile? in
+        urls.compactMap { link -> PhotoFile? in
+            let url = resolvingLink(link)
             guard let values = try? url.resourceValues(forKeys: Set(keys)),
                   values.isDirectory != true,
                   isPhoto(url: url, type: values.contentType) else { return nil }
@@ -65,6 +69,16 @@ public enum FolderScanner {
                              modified: values.contentModificationDate ?? .distantPast,
                              contentType: values.contentType)
         }
+    }
+
+    /// The target of a symbolic link (relative targets resolved against the link's folder, keeping
+    /// the path's spelling); any other URL unchanged.
+    public static func resolvingLink(_ url: URL) -> URL {
+        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { return url }
+        // An absolute URL (not one relative to the link's folder: URLs with different bases never
+        // compare equal, and the photo would be listed twice).
+        let path = target.hasPrefix("/") ? target : url.deletingLastPathComponent().path + "/" + target
+        return URL(fileURLWithPath: path).standardized   // resolves "..", keeps the spelling (no /private stripping)
     }
 
     /// Visible, non-package subfolders of `folder`, sorted by name.
