@@ -91,6 +91,9 @@ struct ContentView: View {
         .onChange(of: dataFolder.settings.stackSameName) {
             browser.rebuildGrid()
         }
+        .onChange(of: dataFolder.settings.stackCover) {
+            browser.rebuildGrid()
+        }
         .sheet(item: $browser.namePrompt) { prompt in
             NamePromptSheet(prompt: prompt)
         }

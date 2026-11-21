@@ -99,3 +99,43 @@ public enum FolderScanner {
         return type.conforms(to: .image) || type.conforms(to: .rawImage)
     }
 }
+
+/// The order of a stack (photos with the same folder and base name). With `.newestExport` (the
+/// default) the newest export is on top, so an edited version shows in the grid, then the RAW;
+/// with `.raw` the RAW is on top. The rest follow by name.
+public enum StackOrder {
+    /// A non-RAW file saved this long after the RAW is an export (a camera's own JPEG has the
+    /// RAW's timestamp, and imports keep it).
+    public static let exportDelay: TimeInterval = 60
+
+    /// Exports in a stack: members no import brought in (when the import log knows the stack), and
+    /// non-RAW files saved well after the RAW, which also catches an export saved over the
+    /// camera's JPEG of the same name.
+    public static func exports(in files: [PhotoFile], isOriginal: (URL) -> Bool) -> Set<URL> {
+        var exports = Set<URL>()
+        if files.contains(where: { isOriginal($0.url) }) {
+            exports.formUnion(files.filter { !isOriginal($0.url) }.map(\.url))
+        }
+        if let raw = files.first(where: { Sidecar.isRaw($0.url) }) {
+            exports.formUnion(files.filter {
+                !Sidecar.isRaw($0.url) && $0.modified > raw.modified.addingTimeInterval(exportDelay)
+            }.map(\.url))
+        }
+        return exports
+    }
+
+    public static func sorted(_ files: [PhotoFile], cover: StackCover = .newestExport,
+                              isOriginal: (URL) -> Bool) -> [PhotoFile] {
+        guard files.count > 1 else { return files }
+        let exports = cover == .newestExport ? exports(in: files, isOriginal: isOriginal) : []
+        func rank(_ file: PhotoFile) -> Int {
+            exports.contains(file.url) ? 0 : Sidecar.isRaw(file.url) ? 1 : 2
+        }
+        return files.sorted { a, b in
+            let ra = rank(a), rb = rank(b)
+            if ra != rb { return ra < rb }
+            if ra == 0, a.modified != b.modified { return a.modified > b.modified }   // newest export first
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+}

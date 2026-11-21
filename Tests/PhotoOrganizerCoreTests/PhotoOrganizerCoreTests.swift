@@ -677,6 +677,9 @@ private func legacySidecar(rating: Int, keyword: String = "legacy") -> String {
                 == ["2026/2026-01-05/Imported/DSC_0001.NEF", "2026/2026-01-05/Imported/DSC_0001.JPG", "2026/2026-11-19/Imported/DSC_0002.JPG"])
 
         let day = images.appendingPathComponent("2026/2026-01-05/Imported")
+        for name in ["Picked", "Rejected"] {
+            #expect(FileManager.default.fileExists(atPath: images.appendingPathComponent("2026/2026-01-05/\(name)").path), "\(name) made at import")
+        }
         for name in ["DSC_0001.NEF", "DSC_0001.JPG", "DSC_0001.xmp", "DSC_0001.JPG.xmp", "NKSC_PARAM/DSC_0001.NEF.nksc"] {
             #expect(FileManager.default.fileExists(atPath: day.appendingPathComponent(name).path), "\(name) imported")
             #expect(FileManager.default.fileExists(atPath: backup.appendingPathComponent("2026/2026-01-05/Imported/\(name)").path), "\(name) backed up")
@@ -1091,5 +1094,51 @@ private final class Counter: @unchecked Sendable {
                 == "~/Dropbox/Photos/images/a.jpg")
         #expect(DataFolderMove.rebase("~/pictures/photo organizer", from: "~/Pictures/Photo Organizer", to: "/Volumes/X/P") == "/Volumes/X/P")
         #expect(DataFolderMove.rebase("~/Pictures/Photo Organizer 2/a.jpg", from: "~/Pictures/Photo Organizer", to: "~/X") == nil)
+    }
+}
+
+@Suite struct StackOrderTests {
+    private let shot = Date(timeIntervalSince1970: 1_767_000_000)
+    private func file(_ name: String, _ minutesAfterShot: Double) -> PhotoFile {
+        PhotoFile(url: URL(fileURLWithPath: "/day/Picked/\(name)"), fileSize: 1,
+                  modified: shot.addingTimeInterval(minutesAfterShot * 60), contentType: nil)
+    }
+
+    @Test func newestExportOnTopThenRAW() {
+        let nef = file("DSC_4800.NEF", 0), jpg = file("DSC_4800.JPG", 0)
+        let tif = file("DSC_4800.TIF", 60), psd = file("DSC_4800.psd", 120)
+        let originals: Set<String> = ["DSC_4800.NEF", "DSC_4800.JPG"]
+        let order = StackOrder.sorted([jpg, tif, nef, psd]) { originals.contains($0.lastPathComponent) }
+        #expect(order.map(\.name) == ["DSC_4800.psd", "DSC_4800.TIF", "DSC_4800.NEF", "DSC_4800.JPG"])
+        let rawFirst = StackOrder.sorted([jpg, tif, nef, psd], cover: .raw) { originals.contains($0.lastPathComponent) }
+        #expect(rawFirst.map(\.name) == ["DSC_4800.NEF", "DSC_4800.JPG", "DSC_4800.psd", "DSC_4800.TIF"], "the setting: RAW on top")
+    }
+
+    @Test func coverSettingIsSavedAndDefaultsToNewestExport() throws {
+        #expect(SharedSettings().stackCover == .newestExport)
+        var settings = SharedSettings()
+        settings.stackCover = .raw
+        let decoded = try JSONDecoder().decode(SharedSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded.stackCover == .raw)
+        let old = try JSONDecoder().decode(SharedSettings.self, from: Data(#"{"stackCover":"somethingNew"}"#.utf8))
+        #expect(old.stackCover == .newestExport, "unknown values fall back to the default")
+    }
+
+    @Test func anExportSavedOverTheCameraJPEGIsOnTop() {
+        // DSC_0373.JPG was imported with its NEF, then replaced by an export of the same name.
+        let nef = file("DSC_0373.NEF", 0), jpg = file("DSC_0373.JPG", 60 * 24 * 200)
+        let originals: Set<String> = ["DSC_0373.NEF", "DSC_0373.JPG"]
+        let order = StackOrder.sorted([nef, jpg]) { originals.contains($0.lastPathComponent) }
+        #expect(order.map(\.name) == ["DSC_0373.JPG", "DSC_0373.NEF"])
+        let untouched = StackOrder.sorted([file("DSC_0374.JPG", 0), file("DSC_0374.NEF", 0)]) { _ in true }
+        #expect(untouched.map(\.name) == ["DSC_0374.NEF", "DSC_0374.JPG"], "the camera's JPEG stays under the RAW")
+    }
+
+    @Test func withoutImportRecordsAnExportIsANewerNonRAWFile() {
+        let nef = file("A.NEF", 0), cameraJPG = file("A.JPG", 0.01), tif = file("A.TIF", 30)
+        let order = StackOrder.sorted([cameraJPG, nef, tif]) { _ in false }
+        #expect(order.map(\.name) == ["A.TIF", "A.NEF", "A.JPG"], "the camera's own JPEG isn't an export")
+        #expect(StackOrder.sorted([cameraJPG, nef]) { _ in false }.map(\.name) == ["A.NEF", "A.JPG"], "plain pairs: RAW on top as before")
+        #expect(StackOrder.exports(in: [file("B.JPG", 0), file("B.TIF", 30)]) { _ in false }.isEmpty, "no RAW, no import record: nothing to tell apart")
     }
 }

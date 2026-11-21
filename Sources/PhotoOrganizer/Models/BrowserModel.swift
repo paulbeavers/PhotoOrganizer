@@ -95,6 +95,8 @@ final class FolderNode: Identifiable, @unchecked Sendable {  // only touched on 
     /// that arrived in Settings.json from another Mac.
     let isAccessible: Bool
     private var loadedChildren: [FolderNode]?
+    /// Subfolders, if they have been read (the folder was expanded); nil otherwise. Doesn't read.
+    var loadedSubfolders: [FolderNode]? { loadedChildren }
 
     init(url: URL, isAccessible: Bool = true) {
         self.url = url
@@ -171,6 +173,15 @@ final class BrowserModel {
         get { dataFolder.settings.stackSameName }
         set {
             dataFolder.updateSettings { $0.stackSameName = newValue }
+            rebuildGrid()
+        }
+    }
+
+    /// Which file is on top of a stack (stored in Settings.json).
+    var stackCover: StackCover {
+        get { dataFolder.settings.stackCover }
+        set {
+            dataFolder.updateSettings { $0.stackCover = newValue }
             rebuildGrid()
         }
     }
@@ -256,7 +267,7 @@ final class BrowserModel {
     }
 
     /// Groups `visiblePhotos` into stacks. A stack sits where its first member sorts; its members
-    /// are ordered RAW first, then by name.
+    /// are ordered newest export first (an edited version shows on top), then RAW, then by name.
     func rebuildGrid() {
         guard stacksEnabled else {
             stackMembers = [:]
@@ -275,10 +286,7 @@ final class BrowserModel {
         var members: [String: [URL]] = [:]
         var topOfHidden: [URL: URL] = [:]
         for key in order {
-            let group = groups[key]!.sorted { a, b in
-                let rawA = Sidecar.isRaw(a.url), rawB = Sidecar.isRaw(b.url)
-                return rawA != rawB ? rawA : a.name.localizedStandardCompare(b.name) == .orderedAscending
-            }
+            let group = StackOrder.sorted(groups[key]!, cover: dataFolder.settings.stackCover, isOriginal: isOriginal)
             guard group.count > 1 else {
                 items.append(GridEntry(photo: group[0], stack: nil))
                 continue
@@ -799,6 +807,17 @@ final class BrowserModel {
     private func updateTags(_ urls: [URL], advance: Bool = false, cleanupConfirmed: Bool = false,
                             _ change: @escaping (inout PhotoTags) -> Void) {
         guard !urls.isEmpty, !blockedByDataFolderMove() else { return }
+        // An export shown on top of its stack: picking, rejecting or unflagging it is about the
+        // photo, so the flag goes to the originals too (and they move).
+        var urls = urls
+        for url in urls where CullFolders.dayFolder(of: url) != nil && !isOriginal(url) {
+            var copy = tags[url] ?? tagStore.tags(for: url)
+            let before = CullFolders.State(copy)
+            change(&copy)
+            guard CullFolders.State(copy) != before else { continue }
+            let originals = CullFolders.group(of: url, isOriginal: isOriginal).originals
+            urls += originals.filter { $0 != url && !urls.contains($0) }
+        }
         // Photos in a day's Imported / Picked / Rejected move to the folder for their new flag.
         let cull = cullChanges(urls, change)
         let extras = cull.filter { $0.before == .picked && $0.after != .picked }.flatMap(\.exports)
@@ -845,14 +864,24 @@ final class BrowserModel {
         }
     }
 
+    @ObservationIgnored private var originalsCache: (sessions: [ImportSession], paths: Set<String>)?
+
+    /// Whether an import brought this file in (the import log lists it); exports made later don't.
+    func isOriginal(_ url: URL) -> Bool {
+        let sessions = dataFolder.importSessions
+        if originalsCache?.sessions != sessions {
+            originalsCache = (sessions, Set(ImportLog.importDates(sessions).keys))
+        }
+        return originalsCache!.paths.contains(PortablePath.string(url).lowercased())
+    }
+
     private typealias CullChange = (originals: [URL], exports: [URL], before: CullFolders.State, after: CullFolders.State)
 
     /// For photos in a day's Imported / Picked / Rejected folder: each pair's cull state before and
     /// after `change`, and the exports made from it (photos no import brought in).
     private func cullChanges(_ urls: [URL], _ change: (inout PhotoTags) -> Void) -> [CullChange] {
         let changing = Set(urls)
-        let imported = Set(ImportLog.importDates(dataFolder.importSessions).keys)
-        let isOriginal = { (url: URL) in imported.contains(PortablePath.string(url).lowercased()) }
+        let isOriginal = { (url: URL) in self.isOriginal(url) }
         var seen = Set<String>()
         var result: [CullChange] = []
         for url in urls where CullFolders.dayFolder(of: url) != nil {
@@ -876,6 +905,9 @@ final class BrowserModel {
     private func applyMoves(_ moves: [URL: URL]) {
         guard !moves.isEmpty else { return }
         dataFolder.relocate(moves)
+        // The move may have created a day's Picked / Rejected folder: show it in the sidebar tree.
+        let parents = Set(moves.values.map { $0.deletingLastPathComponent() })
+        if parents.contains(where: { !sidebarShows($0) }) { refreshSidebar() }
         if liveImportID != nil { liveImportURLs = liveImportURLs.map { moves[$0] ?? $0 } }
         func stillShown(_ url: URL) -> Bool {
             guard case .folder(let folder) = source else { return true }
@@ -1088,6 +1120,21 @@ final class BrowserModel {
 
     private func refreshSidebar() {
         syncSidebarWithSettings(force: true)
+    }
+
+    /// Whether the sidebar tree already lists `folder` (where it has been expanded so far).
+    private func sidebarShows(_ folder: URL) -> Bool {
+        let parent = folder.deletingLastPathComponent().standardizedFileURL
+        func find(_ nodes: [FolderNode]) -> FolderNode? {
+            for node in nodes {
+                if node.url.standardizedFileURL == parent { return node }
+                if parent.path.hasPrefix(node.url.standardizedFileURL.path + "/"), let loaded = node.loadedSubfolders,
+                   let found = find(loaded) { return found }
+            }
+            return nil
+        }
+        guard let node = find(rootNodes), let loaded = node.loadedSubfolders else { return true }  // not expanded yet
+        return loaded.contains { $0.url.standardizedFileURL == folder.standardizedFileURL }
     }
 
     private func runFileOperation(_ verb: String, relocates: Bool = false, reselect: Bool = false,

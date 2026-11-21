@@ -41,10 +41,15 @@ private struct GeneralSettings: View {
             Section {
                 Toggle("Stack files with the same name", isOn: Binding(
                     get: { browser.stacksEnabled }, set: { browser.stacksEnabled = $0 }))
+                Picker("On top of a stack", selection: Binding(
+                    get: { browser.stackCover }, set: { browser.stackCover = $0 })) {
+                    ForEach(StackCover.allCases) { Text($0.displayName).tag($0) }
+                }
+                .disabled(!browser.stacksEnabled)
             } header: {
                 Text("Browsing")
             } footer: {
-                Text("Shows DSC_0001.NEF and DSC_0001.JPG as one stack; click its arrow or press S to see both. Moving, copying, renaming or trashing a closed stack includes every file in it.")
+                Text("Shows DSC_0001.NEF and DSC_0001.JPG as one stack; click its arrow or press S to see both. Moving, copying, renaming or trashing a closed stack includes every file in it. Newest export puts an edited copy you saved with the same name (such as DSC_0001.TIF from NX Studio) on top, so edited photos look edited in the grid.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

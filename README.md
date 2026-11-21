@@ -31,7 +31,10 @@ database or catalog.
 
 **Browsing**
 - **Stacks.** Files with the same name in one folder (`DSC_0001.NEF` + `DSC_0001.JPG`) show as one
-  stack, RAW on top, with a badge such as "NEF+JPG". Click its arrow or press **S** to open it, and
+  stack with a badge such as "NEF+JPG". On top is the newest export (e.g. a TIFF you saved from NX
+  Studio with the same name, so edited photos look edited), else the RAW; Settings → General →
+  "On top of a stack" can always show the RAW instead. Picking, rejecting or unflagging an export
+  on top also flags its originals. Click its arrow or press **S** to open it, and
   use View → Expand / Collapse All Stacks (⌥⌘→ / ⌥⌘←). Ratings, labels, flags and keywords apply to
   the photo you see (open the stack to tag the other file); moving, copying, renaming, trashing or
   adding a closed stack to a collection includes every file in it. Turn stacking off in View or

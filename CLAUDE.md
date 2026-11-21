@@ -123,7 +123,10 @@ app. Both should finish with no errors or warnings.
 - Stacks (same folder + base name): `BrowserModel.gridItems` / `displayedPhotos` are what the grid,
   navigation, selection ranges and review use; `visiblePhotos` is every matching file. Tags apply
   to the photo shown (per-file sidecars); file operations must go through
-  `includingStacks(_:)` so a closed stack is never split.
+  `includingStacks(_:)` so a closed stack is never split. Member order is `StackOrder.sorted`
+  (setting `stackCover`: newest export on top, else RAW). Exports are files not in the import log
+  or non-RAW files saved over a minute after the RAW (e.g. an export saved over the camera JPEG). A flag change on an
+  export also goes to its originals in `updateTags`, so cull moves still happen.
 - `BrowserModel.visiblePhotos` is cached and recomputed in `didSet` of `photos`, `tags`,
   `criteria` and the sort settings. Assign `tags` in bulk (build a copy, then assign once), not
   key by key in a loop.

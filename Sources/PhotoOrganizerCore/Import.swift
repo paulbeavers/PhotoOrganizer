@@ -326,6 +326,13 @@ public enum Importer {
             do {
                 try fm.createDirectory(at: folder, withIntermediateDirectories: true)
                 if let backupFolder { try fm.createDirectory(at: backupFolder, withIntermediateDirectories: true) }
+                // Every import day has all three cull folders from the start (see `CullFolders`).
+                if folder.lastPathComponent == CullFolders.imported {
+                    let day = folder.deletingLastPathComponent()
+                    for name in [CullFolders.picked, CullFolders.rejected] {
+                        try fm.createDirectory(at: day.appendingPathComponent(name, isDirectory: true), withIntermediateDirectories: true)
+                    }
+                }
             } catch {
                 result.failures.append("\(group.folder): \(error.localizedDescription)")
                 continue
