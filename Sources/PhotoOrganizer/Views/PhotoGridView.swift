@@ -88,6 +88,7 @@ struct PhotoGridView: View {
                         let photo = item.photo
                         PhotoCell(photo: photo,
                                   tags: browser.tags[photo.url],
+                                  editedIn: browser.edits[photo.url] ?? [],
                                   isSelected: browser.selection.contains(photo.url),
                                   size: browser.thumbnailSize,
                                   showsFolder: browser.includeSubfolders || browser.currentFolder == nil,
@@ -195,6 +196,8 @@ struct PhotoCell: View {
 
     let photo: PhotoFile
     let tags: PhotoTags?
+    /// Apps whose own settings files hold edits for this photo (not shown in the preview).
+    var editedIn: [String] = []
     let isSelected: Bool
     let size: CGFloat
     var showsFolder = false
@@ -237,11 +240,16 @@ struct PhotoCell: View {
                 }
             }
 
-            Text(photo.name)
+            // A faint mark after the name when another app holds edits the preview can't show.
+            (Text(photo.name)
+                + (editedIn.isEmpty ? Text("") : Text(" ") + Text(Image(systemName: "slider.horizontal.3"))
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary.opacity(0.6))))
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: size)
+                .help(editedIn.isEmpty ? photo.name : "Edited in \(editedIn.joined(separator: ", ")) (not shown in the preview)")
             if showsFolder {
                 Text(photo.url.deletingLastPathComponent().lastPathComponent)
                     .font(.caption2)

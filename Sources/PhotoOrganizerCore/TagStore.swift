@@ -279,3 +279,29 @@ enum XMPTags {
         return []
     }
 }
+
+/// Which other apps have edited a photo through their own settings files (edits this app can't
+/// show in previews): Camera Raw / Lightroom settings in the XMP sidecar, and NX Studio,
+/// RawTherapee and DxO PhotoLab settings files.
+public enum EditDetector {
+    public static let cameraRaw = "Camera Raw"
+
+    /// Editor names, e.g. ["Camera Raw", "NX Studio"]; empty when nothing edited the photo.
+    public static func editors(of photo: URL) -> [String] {
+        var editors: [String] = []
+        if let sidecar = Sidecar.existingURL(for: photo), hasCameraRawSettings(sidecar) {
+            editors.append(cameraRaw)
+        }
+        for companion in CompanionFileType.existing(for: photo) where companion.type != .xmpSidecar {
+            editors.append(companion.type.editor)
+        }
+        return editors
+    }
+
+    /// Camera Raw marks a sidecar it has adjusted with `crs:HasSettings="True"` (attribute or
+    /// element form).
+    static func hasCameraRawSettings(_ sidecar: URL) -> Bool {
+        guard let data = try? Data(contentsOf: sidecar), let text = String(data: data, encoding: .utf8) else { return false }
+        return text.contains(#"crs:HasSettings="True""#) || text.contains("<crs:HasSettings>True</crs:HasSettings>")
+    }
+}

@@ -33,7 +33,9 @@ database or catalog.
 - **Stacks.** Files with the same name in one folder (`DSC_0001.NEF` + `DSC_0001.JPG`) show as one
   stack with a badge such as "NEF+JPG". On top is the newest export (e.g. a TIFF you saved from NX
   Studio with the same name, so edited photos look edited), else the RAW; Settings → General →
-  "On top of a stack" can always show the RAW instead. Picking, rejecting or unflagging an export
+  "On top of a stack" can always show the RAW instead. A faint slider mark after a file
+  name means another app holds edits for it in its own settings files (Camera Raw, NX Studio,
+  RawTherapee, DxO); previews show the camera's rendering, so hover to see which app. Picking, rejecting or unflagging an export
   on top also flags its originals. Click its arrow or press **S** to open it, and
   use View → Expand / Collapse All Stacks (⌥⌘→ / ⌥⌘←). Ratings, labels, flags and keywords apply to
   the photo you see (open the stack to tag the other file); moving, copying, renaming, trashing or

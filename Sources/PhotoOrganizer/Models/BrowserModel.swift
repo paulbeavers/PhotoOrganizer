@@ -131,6 +131,9 @@ final class BrowserModel {
     private(set) var source: BrowseSource?
     private(set) var photos: [PhotoFile] = [] { didSet { refilter() } }
     private(set) var tags: [URL: PhotoTags] = [:] { didSet { refilter() } }
+    /// Apps that have edited a photo through their own settings files (Camera Raw, NX Studio…):
+    /// shown as a small mark on its cell. Loaded with the tags.
+    private(set) var edits: [URL: [String]] = [:]
     /// EXIF and import dates for smart-collection rules; loaded only when the open collection's
     /// rules need them.
     private(set) var ruleInfo: [URL: RuleInfo] = [:] { didSet { refilter() } }
@@ -401,6 +404,7 @@ final class BrowserModel {
         isReviewing = false
         photos = []
         tags = [:]
+        edits = [:]
         restartWatching()
         reload()
     }
@@ -428,13 +432,18 @@ final class BrowserModel {
                 if let f = focused, !present.contains(f) { focused = nil }
 
                 var loadedTags = tags.filter { present.contains($0.key) }
+                var loadedEdits = edits.filter { present.contains($0.key) }
                 for chunk in found.chunked(into: 250) {
                     let loaded = await Task.detached(priority: .utility) {
-                        chunk.map { ($0.url, store.tags(for: $0.url)) }
+                        chunk.map { ($0.url, store.tags(for: $0.url), EditDetector.editors(of: $0.url)) }
                     }.value
                     guard !Task.isCancelled else { return }
-                    for (url, t) in loaded { loadedTags[url] = t }
+                    for (url, t, editors) in loaded {
+                        loadedTags[url] = t
+                        loadedEdits[url] = editors.isEmpty ? nil : editors
+                    }
                     if loadedTags != tags { tags = loadedTags }
+                    if loadedEdits != edits { edits = loadedEdits }
                 }
                 // Smart-collection rules on camera / lens / dates: read what they need.
                 if let rules = smartRules, rules.needsMetadata || rules.usesImportDate {
@@ -596,6 +605,7 @@ final class BrowserModel {
         source = nil
         photos = []
         tags = [:]
+        edits = [:]
         selection = []
         focused = nil
         criteria = SearchCriteria()
@@ -917,8 +927,10 @@ final class BrowserModel {
         }
         var movedTags = tags
         var movedInfo = ruleInfo
+        var movedEdits = edits
         for (old, new) in moves {
             if let t = movedTags.removeValue(forKey: old) { movedTags[new] = t }
+            if let e = movedEdits.removeValue(forKey: old) { movedEdits[new] = e }
             if let info = movedInfo.removeValue(forKey: old) { movedInfo[new] = info }
         }
         photos = photos.compactMap { photo in
@@ -927,6 +939,7 @@ final class BrowserModel {
                                                contentType: photo.contentType) : nil
         }
         tags = movedTags
+        edits = movedEdits
         ruleInfo = movedInfo
         selection = Set(selection.map { moves[$0] ?? $0 })
         focused = focused.map { moves[$0] ?? $0 }
@@ -1045,6 +1058,8 @@ final class BrowserModel {
             source = nil
             photos = []
             tags = [:]
+            edits = [:]
+        edits = [:]
             criteria = SearchCriteria()
         }
     }

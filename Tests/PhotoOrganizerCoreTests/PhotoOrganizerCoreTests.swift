@@ -1142,3 +1142,32 @@ private final class Counter: @unchecked Sendable {
         #expect(StackOrder.exports(in: [file("B.JPG", 0), file("B.TIF", 30)]) { _ in false }.isEmpty, "no RAW, no import record: nothing to tell apart")
     }
 }
+
+@Suite struct EditDetectorTests {
+    @Test func findsCameraRawAndEditorSettingsFiles() throws {
+        let folder = try makeTempFolder()
+        let nef = folder.appendingPathComponent("DSC_0001.NEF"), plain = folder.appendingPathComponent("DSC_0002.NEF")
+        try writeJPEG(to: nef)
+        try writeJPEG(to: plain)
+        #expect(EditDetector.editors(of: nef).isEmpty)
+
+        // Our own tags alone are not an edit.
+        try TagStore().update(nef) { $0.rating = 3 }
+        #expect(EditDetector.editors(of: nef).isEmpty)
+
+        // Camera Raw adds its settings to the same sidecar.
+        let sidecar = folder.appendingPathComponent("DSC_0001.xmp")
+        let text = try String(contentsOf: sidecar, encoding: .utf8)
+            .replacingOccurrences(of: "<rdf:Description ", with: #"<rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:HasSettings="True" crs:Exposure2012="+0.50" "#)
+        try text.write(to: sidecar, atomically: true, encoding: .utf8)
+        #expect(EditDetector.editors(of: nef) == ["Camera Raw"])
+        #expect(TagStore().tags(for: nef).rating == 3, "still a valid sidecar")
+
+        let nksc = folder.appendingPathComponent("NKSC_PARAM")
+        try FileManager.default.createDirectory(at: nksc, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: nksc.appendingPathComponent("DSC_0001.NEF.nksc"))
+        try Data("x".utf8).write(to: folder.appendingPathComponent("DSC_0002.NEF.pp3"))
+        #expect(EditDetector.editors(of: nef) == ["Camera Raw", "NX Studio"])
+        #expect(EditDetector.editors(of: plain) == ["RawTherapee"])
+    }
+}
