@@ -161,6 +161,13 @@ user name. Editors also record the app's bundle ID, so they are found even if th
 somewhere else. The app re-reads the data folder whenever it comes to the front, so synced changes
 show up without a restart.
 
+**Moving it:** Settings → Data Folder → Change…, then choose an empty folder and *Move Everything
+Here*. Photos, collections, imports, keywords and settings move together, and the paths stored in
+them are updated. On the same disk it takes a moment; on another disk every file is copied and
+verified first, and the originals are removed only once everything has been copied (Cancel leaves
+everything as it was). Choosing a folder that already is a data folder (e.g. synced from another
+Mac) uses it as it is; *Start Fresh Here* starts an empty one with your settings.
+
 ### Kept on each Mac (not synced)
 
 - **Where the data folder is.** The app needs this before it can read `Settings.json`.

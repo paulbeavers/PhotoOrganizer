@@ -56,6 +56,7 @@ struct PhotoOrganizerApp: App {
                 .environment(dataFolder)
                 .environment(browser)
                 .environment(editors)
+                .environment(importer)
         }
     }
 }

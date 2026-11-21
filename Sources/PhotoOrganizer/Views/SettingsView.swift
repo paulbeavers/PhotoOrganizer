@@ -111,6 +111,7 @@ private struct EditorsSettings: View {
 private struct DataFolderSettings: View {
     @Environment(DataFolderModel.self) private var dataFolder
     @Environment(BrowserModel.self) private var browser
+    @Environment(ImportModel.self) private var importer
 
     var body: some View {
         @Bindable var browser = browser
@@ -122,8 +123,25 @@ private struct DataFolderSettings: View {
                         .lineLimit(2)
                         .truncationMode(.middle)
                 }
+                if let progress = dataFolder.moveProgress {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            ProgressView(value: progress.bytesTotal > 0
+                                         ? Double(progress.bytesDone) / Double(progress.bytesTotal)
+                                         : Double(progress.filesDone) / Double(max(progress.filesTotal, 1)))
+                            Button("Cancel") { dataFolder.cancelMove() }
+                                .disabled(progress.bytesTotal == 0)   // a same-disk move is a few renames
+                        }
+                        Text(progress.bytesTotal > 0
+                             ? "Copying \(progress.filesDone) of \(progress.filesTotal) · \(ByteCountFormatter.string(fromByteCount: progress.bytesDone, countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: progress.bytesTotal, countStyle: .file))"
+                             : "Moving…")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     Button("Change…") { dataFolder.chooseFolderInteractively() }
+                        .disabled(dataFolder.moveProgress != nil || importer.isImporting)
+                        .help(importer.isImporting ? "Wait for the import to finish" : "Use or move to another folder")
                     Button("Show in Finder") { dataFolder.revealInFinder() }
                     if dataFolder.url != DataFolderModel.defaultURL {
                         Spacer()

@@ -200,6 +200,7 @@ final class BrowserModel {
         self.dataFolder = dataFolder
         let defaults = UserDefaults.standard
         syncSidebarWithSettings()
+        dataFolder.onMoved = { [weak self] old, new in self?.dataFolderMoved(from: old, to: new) }
         if let last = defaults.string(forKey: Keys.lastFolder), FileManager.default.fileExists(atPath: last) {
             open(.folder(URL(fileURLWithPath: last, isDirectory: true)))
         }
@@ -509,6 +510,28 @@ final class BrowserModel {
         reload()
     }
 
+    /// While the data folder is being moved, changes would be lost (the copy may already be made):
+    /// refuse them with a message.
+    func blockedByDataFolderMove() -> Bool {
+        guard dataFolder.moveProgress != nil else { return false }
+        errorMessage = "The data folder is being moved. Try again when the move has finished."
+        return true
+    }
+
+    /// After the data folder moved: the sidebar follows, and a folder that moved along reopens at
+    /// its new place.
+    private func dataFolderMoved(from old: URL, to new: URL) {
+        syncSidebarWithSettings(force: true)
+        if case .folder(let folder) = source,
+           let path = DataFolderMove.rebase(PortablePath.string(folder), from: PortablePath.string(old),
+                                             to: PortablePath.string(new)) {
+            open(.folder(PortablePath.url(path)))
+        } else {
+            restartWatching()
+            reload()
+        }
+    }
+
     // MARK: - Running import
 
     /// The import being copied right now, and its files so far (in import order).
@@ -775,7 +798,7 @@ final class BrowserModel {
 
     private func updateTags(_ urls: [URL], advance: Bool = false, cleanupConfirmed: Bool = false,
                             _ change: @escaping (inout PhotoTags) -> Void) {
-        guard !urls.isEmpty else { return }
+        guard !urls.isEmpty, !blockedByDataFolderMove() else { return }
         // Photos in a day's Imported / Picked / Rejected move to the folder for their new flag.
         let cull = cullChanges(urls, change)
         let extras = cull.filter { $0.before == .picked && $0.after != .picked }.flatMap(\.exports)
@@ -1069,6 +1092,7 @@ final class BrowserModel {
 
     private func runFileOperation(_ verb: String, relocates: Bool = false, reselect: Bool = false,
                                   _ operation: @escaping @Sendable () -> FileOperationResult) {
+        guard !blockedByDataFolderMove() else { return }
         Task {
             let result = await Task.detached(priority: .userInitiated) { operation() }.value
             if relocates { dataFolder.relocate(result.completed) }

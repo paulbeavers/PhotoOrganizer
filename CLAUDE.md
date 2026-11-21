@@ -92,6 +92,12 @@ app. Both should finish with no errors or warnings.
 - XMP must stay readable by Adobe apps: `xmp:Rating` (−1 = reject), `xmp:Label`, `dc:subject` (flat,
   every level) plus `lr:hierarchicalSubject` (`A|B|C`), and IPTC fields in their standard properties.
   The pick flag is the only app-specific field (`photoorganizer:Pick`).
+- **Moving the data folder** (`PhotoOrganizerCore/DataFolderMove.swift`, `DataFolderModel.chooseFolderInteractively`):
+  only into an empty folder. Same volume: rename the top-level items; otherwise verified copy, and
+  originals are removed only after everything copied. Then `rewritePaths` updates collections,
+  import log, import history and settings. Any new file in the data folder that stores paths must be
+  added to `rewritePaths`. Edits, file operations and imports are refused while a move runs
+  (`BrowserModel.blockedByDataFolderMove`).
 - Collection files store paths under the home folder as `~/…` (`PortablePath`), so a synced data
   folder works on another Mac. Use `PortablePath.homeDirectory`, never `NSHomeDirectory()`, which points
   into the container when sandboxed.

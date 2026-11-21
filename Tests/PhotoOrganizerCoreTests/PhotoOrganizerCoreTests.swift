@@ -1008,3 +1008,88 @@ private final class Counter: @unchecked Sendable {
         #expect(ImportLayout.destinationFolder(for: date) == "2026/2026-11-19/Imported")
     }
 }
+
+@Suite struct DataFolderMoveTests {
+    /// A small data folder: a photo in a day's Picked folder, an empty Rejected folder, a
+    /// collection, an import record, the import history and settings, all pointing inside it.
+    private func makeDataFolder() throws -> (folder: URL, photo: URL) {
+        let folder = try makeTempFolder().appendingPathComponent("Photo_Data")
+        let day = folder.appendingPathComponent("images/2026/2026-11-19")
+        try FileManager.default.createDirectory(at: day.appendingPathComponent("Picked"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: day.appendingPathComponent("Rejected"), withIntermediateDirectories: true)
+        let photo = day.appendingPathComponent("Picked/DSC_0001.JPG")
+        try writeJPEG(to: photo)
+        try TagStore().update(photo) { $0.rating = 5 }
+        let path = PortablePath.string(photo)
+        try CollectionStore(folder: folder.appendingPathComponent("Collections"))
+            .save(PhotoCollection(name: "Best", kind: .manual, items: [path]))
+        try ImportLog(dataFolder: folder).save(ImportSession(source: "card", files: [path]))
+        try ImportHistory(dataFolder: folder).record(["k": path])
+        var settings = SharedSettings()
+        settings.sidebarFolders = [PortablePath.string(folder.appendingPathComponent("images")), "~/Elsewhere"]
+        try SharedSettingsStore(folder: folder).save(settings)
+        try "Birds\n".write(to: folder.appendingPathComponent("Keywords.txt"), atomically: true, encoding: .utf8)
+        return (folder, photo)
+    }
+
+    private func checkMoved(to new: URL, from old: URL) throws {
+        let photo = new.appendingPathComponent("images/2026/2026-11-19/Picked/DSC_0001.JPG")
+        let path = PortablePath.string(photo)
+        #expect(FileManager.default.fileExists(atPath: photo.path))
+        #expect(TagStore().tags(for: photo).rating == 5, "sidecars come along")
+        #expect(FileManager.default.fileExists(atPath: new.appendingPathComponent("images/2026/2026-11-19/Rejected").path), "empty folders too")
+        #expect(!FileManager.default.fileExists(atPath: old.path), "the emptied old folder is removed")
+        #expect(CollectionStore(folder: new.appendingPathComponent("Collections")).loadAll().first?.items == [path])
+        #expect(ImportLog(dataFolder: new).loadAll().first?.files == [path])
+        #expect(ImportHistory(dataFolder: new).load()["k"] == path)
+        let settings = try #require(SharedSettingsStore(folder: new).load())
+        #expect(settings.sidebarFolders == [PortablePath.string(new.appendingPathComponent("images")), "~/Elsewhere"])
+        #expect(FileManager.default.fileExists(atPath: new.appendingPathComponent("Keywords.txt").path))
+    }
+
+    @Test func movesOnTheSameDiskAndRewritesPaths() throws {
+        let (old, _) = try makeDataFolder()
+        let new = try makeTempFolder().appendingPathComponent("Moved")
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        try DataFolderMove.run(from: old, to: new)
+        try checkMoved(to: new, from: old)
+    }
+
+    @Test func copiesAndVerifiesAcrossDisks() throws {
+        let (old, _) = try makeDataFolder()
+        let new = try makeTempFolder().appendingPathComponent("Copied")
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        try DataFolderMove.run(from: old, to: new, alwaysCopy: true)
+        try checkMoved(to: new, from: old)
+    }
+
+    @Test func cancellingLeavesTheOriginalUntouched() throws {
+        let (old, photo) = try makeDataFolder()
+        let new = try makeTempFolder().appendingPathComponent("Cancelled")
+        try FileManager.default.createDirectory(at: new, withIntermediateDirectories: true)
+        #expect(throws: DataFolderMove.MoveError.cancelled) {
+            try DataFolderMove.run(from: old, to: new, isCancelled: { true }, alwaysCopy: true)
+        }
+        #expect(FileManager.default.fileExists(atPath: photo.path))
+        #expect(DataFolderMove.isEmpty(new), "partial copies are removed")
+    }
+
+    @Test func refusesUnsuitablePlaces() throws {
+        let (old, _) = try makeDataFolder()
+        #expect(throws: DataFolderMove.MoveError.sameFolder) { try DataFolderMove.validate(from: old, to: old) }
+        #expect(throws: DataFolderMove.MoveError.insideCurrent) {
+            try DataFolderMove.validate(from: old, to: old.appendingPathComponent("images"))
+        }
+        let full = try makeTempFolder()
+        try Data("x".utf8).write(to: full.appendingPathComponent("note.txt"))
+        #expect(throws: DataFolderMove.MoveError.notEmpty) { try DataFolderMove.validate(from: old, to: full) }
+        #expect(DataFolderMove.isDataFolder(old) && !DataFolderMove.isDataFolder(full))
+    }
+
+    @Test func rebasesPortablePaths() {
+        #expect(DataFolderMove.rebase("~/Pictures/Photo Organizer/images/a.jpg", from: "~/Pictures/Photo Organizer", to: "~/Dropbox/Photos")
+                == "~/Dropbox/Photos/images/a.jpg")
+        #expect(DataFolderMove.rebase("~/pictures/photo organizer", from: "~/Pictures/Photo Organizer", to: "/Volumes/X/P") == "/Volumes/X/P")
+        #expect(DataFolderMove.rebase("~/Pictures/Photo Organizer 2/a.jpg", from: "~/Pictures/Photo Organizer", to: "~/X") == nil)
+    }
+}

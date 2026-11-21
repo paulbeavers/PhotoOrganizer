@@ -109,6 +109,7 @@ final class ImportModel {
     // MARK: Sources
 
     func present() {
+        guard !browser.blockedByDataFolderMove() else { return }
         refreshVolumes()
         if source == nil, let card = volumes.first(where: \.hasDCIM) { select(card) }
         isPresented = true
@@ -248,7 +249,7 @@ final class ImportModel {
 
     func startImport() {
         let plan = plan
-        guard plan.fileCount > 0 else { return }
+        guard plan.fileCount > 0, !browser.blockedByDataFolderMove() else { return }
         var backupRoot: URL?
         if settings.backupEnabled {
             guard let backup = backupFolderURL else {

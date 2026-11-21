@@ -29,6 +29,11 @@ final class DataFolderModel {
     private(set) var settings = SharedSettings()
     /// Every import, newest first (one file each in `Imports/`).
     private(set) var importSessions: [ImportSession] = []
+    /// While the data folder is being moved to a new location.
+    private(set) var moveProgress: DataFolderMove.Progress?
+    @ObservationIgnored private var moveCancel: CancelFlag?
+    /// Called after a move with the old and new location (the browser reopens what it showed).
+    @ObservationIgnored var onMoved: ((URL, URL) -> Void)?
     var errorMessage: String?
     @ObservationIgnored private var hasLoadedSettings = false
 
@@ -227,9 +232,98 @@ final class DataFolderModel {
         panel.prompt = "Use This Folder"
         panel.message = "Choose where to keep settings, collections and the keyword list. If the folder already has them (e.g. synced from another Mac), they are used as they are; otherwise your current settings are copied there."
         guard panel.runModal() == .OK, let chosen = panel.url else { return }
-        if let bookmark = FolderAccess.grant(chosen) { UserDefaults.standard.set(bookmark, forKey: Keys.bookmark) }
-        url = chosen
+        let bookmark = FolderAccess.grant(chosen)
+        // Already a data folder (e.g. synced from another Mac): use it as it is.
+        if DataFolderMove.isDataFolder(chosen) {
+            switchTo(chosen, bookmark: bookmark)
+            return
+        }
+        let alert = NSAlert()
+        do {
+            try DataFolderMove.validate(from: url, to: chosen)
+            alert.messageText = "Move your data folder here?"
+            alert.informativeText = """
+                Move Everything Here moves your photos (the images folder), collections, imports, \
+                keywords and settings from \(PortablePath.string(url)) to \(PortablePath.string(chosen)), \
+                and updates the paths stored in them. On the same disk this takes a moment; on \
+                another disk every file is copied and checked, and the originals are removed only \
+                after everything has been copied.
+
+                Start Fresh Here makes it a new, empty data folder with your current settings. Your \
+                photos and collections stay where they are.
+                """
+            alert.addButton(withTitle: "Move Everything Here")
+            alert.addButton(withTitle: "Start Fresh Here")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: moveDataFolder(to: chosen, bookmark: bookmark)
+            case .alertSecondButtonReturn: switchTo(chosen, bookmark: bookmark)
+            default: break
+            }
+        } catch DataFolderMove.MoveError.notEmpty {
+            alert.messageText = "This folder isn't empty"
+            alert.informativeText = """
+                To move your data folder, choose an empty folder (New Folder in the window makes one).
+
+                Or start fresh here: a new data folder with your current settings, while your photos \
+                and collections stay where they are.
+                """
+            alert.addButton(withTitle: "Start Fresh Here")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn { switchTo(chosen, bookmark: bookmark) }
+        } catch {
+            alert.messageText = "Can't use this folder"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+        }
+    }
+
+    private func switchTo(_ folder: URL, bookmark: Data?) {
+        if let bookmark { UserDefaults.standard.set(bookmark, forKey: Keys.bookmark) }
+        url = folder
         reload()
+    }
+
+    /// Moves everything to `new` in the background (see `DataFolderMove`), then uses it.
+    private func moveDataFolder(to new: URL, bookmark: Data?) {
+        let old = url
+        let flag = CancelFlag()
+        moveCancel = flag
+        moveProgress = DataFolderMove.Progress()
+        Task {
+            let failure: Error? = await Task.detached(priority: .userInitiated) {
+                do {
+                    try DataFolderMove.run(from: old, to: new, progress: { progress in
+                        Task { @MainActor in if self.moveProgress != nil { self.moveProgress = progress } }
+                    }, isCancelled: { flag.isSet })
+                    return nil
+                } catch {
+                    return error
+                }
+            }.value
+            moveProgress = nil
+            moveCancel = nil
+            if let failure {
+                let alert = NSAlert()
+                alert.messageText = failure as? DataFolderMove.MoveError == .cancelled
+                    ? "Move cancelled" : "Couldn't move the data folder"
+                alert.informativeText = failure as? DataFolderMove.MoveError == .cancelled
+                    ? "Nothing was changed: the data folder is still at \(PortablePath.string(old))."
+                    : "\(failure.localizedDescription)\n\nThe data folder is still at \(PortablePath.string(old)); anything already copied to the new location was removed."
+                alert.runModal()
+                return
+            }
+            switchTo(new, bookmark: bookmark)
+            // This Mac's access to the sidebar folders that moved along (e.g. images).
+            for folder in settings.sidebarFolderURLs where folder.path.hasPrefix(new.path + "/") {
+                FolderAccess.rememberGrant(for: folder)
+            }
+            onMoved?(old, new)
+        }
+    }
+
+    func cancelMove() {
+        moveCancel?.set()
     }
 
     func revealInFinder() {
